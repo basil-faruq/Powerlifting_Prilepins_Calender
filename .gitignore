@@ -1,0 +1,29 @@
+# Secrets and local config
+.env
+.env.local
+.claude.json
+.claude/settings.local.json
+
+# The authored template is the athlete's own data — never committed.
+# CONTEXT.md §4 documents everything the golden test needs to know about it.
+data/*.xlsx
+!data/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+
+# Node / frontend (spec 16)
+node_modules/
+dist/
+
+# Editors and OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

@@ -1,0 +1,49 @@
+# Development infrastructure only.
+#
+# During development the backend and frontend run on the host with hot reload;
+# only these two services are containerised. The full containerised stack is
+# spec 22.
+#
+# Deliberately absent:
+#   - Ollama, which runs natively on the host so it can use the GPU
+#   - Langfuse, which is the Cloud free tier (spec 14)
+
+name: powerlifting-planner
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: planner
+      POSTGRES_USER: planner
+      POSTGRES_PASSWORD: planner
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U planner -d planner"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  temporal:
+    # The Temporal CLI image; its ENTRYPOINT is ["temporal"], so `command` below
+    # runs `temporal server start-dev`. State is in-memory: restarting this
+    # container discards workflow history, which is fine until spec 15.
+    image: temporalio/temporal:1.9.1
+    command:
+      - server
+      - start-dev
+      - --ip
+      - 0.0.0.0
+      - --ui-port
+      - "8233"
+    ports:
+      - "7233:7233" # gRPC frontend
+      - "8233:8233" # Web UI
+    restart: unless-stopped
+
+volumes:
+  pgdata:

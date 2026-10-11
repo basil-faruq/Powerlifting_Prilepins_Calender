@@ -1,0 +1,1 @@
+"""Powerlifting domain plug-in."""
