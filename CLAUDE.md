@@ -104,6 +104,7 @@ Use `/ship-feature` to commit, push, open a PR, squash-merge and clean up. It ve
 - Never commit `.env`, API keys or a `.claude.json`. `.env.example` lists every variable with safe defaults.
 - Never commit `data/B1_Mine.xlsx` file.
 - Never commit computed weights into the template — only sets, reps and the % fraction.
+- Never commit anything related to ADR plugins and generated ADRs in `docs/adr/`.
 - Do not hand-edit `data/B1_Mine.xlsx`. Its two known errors are worked around in code and documented in spec 03.
 - Do not add authentication, multi-user support or a second athlete. Single-athlete is a recorded decision, not an oversight.
 - Do not swap `pydantic-ai` for LangChain or LangGraph. Only one agent framework belongs in this repo.

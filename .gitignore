@@ -9,6 +9,17 @@
 data/*.xlsx
 !data/.gitkeep
 
+# ADR plugin tooling: installed alongside the project, not part of it. The files
+# stay on disk so the plugin keeps working; only `docs/adr/` (the ADRs it writes)
+# and `.claude/specs/` belong in version control.
+.claude/adr.local.md
+.claude/agents/adr-*.md
+.claude/commands/adr-*.md
+.claude/schemas/adr-export.schema.json
+.claude/site/
+.claude/skills/adr-*/
+.claude/templates/
+
 # Python
 __pycache__/
 *.py[cod]
