@@ -57,7 +57,11 @@ The project is a production-planning agent whose domain happens to be a gym. The
 
 ## 4. The template, verified
 
-`data/B1_Mine.xlsx`, block B1. Starting 1RMs: deadlift 160, squat 140, bench 105, press 70, row 105 kg.
+`data/B1_Mine.xlsx`, block B1.
+
+**What the workbook contributes is the block's *pattern* and nothing else:** which lift trains on which day of which week, for how many sets and reps, at what intensity. The maxes on its `1RM` sheet — deadlift 160, squat 140, bench 105, press 70, row 105 kg — are **examples**, and the file records no date for them at all. The importer does not read that sheet. Real 1RMs reach `one_rep_max` only when the athlete enters them together with the date they tested them, and those are the only maxes the planner ever computes from. The numbers are repeated here solely so the sheet's own arithmetic below can be followed.
+
+For the same reason the intensity denominator is **not** a 1RM. The squat rows divide by 120 while that sheet's example max is 140, and bench W11 divides by 125 against 105 — the denominator is the target max the block was programmed against, an authored datum in its own right. A weight is `FLOOR(athlete's 1RM × num/den, increment)`; `pct_den` never stands in for the max.
 
 | Lift | Entries | Slot(s) | Test |
 | --- | --- | --- | --- |
@@ -67,7 +71,7 @@ The project is a production-planning agent whose domain happens to be a gym. The
 | Press | 11 | 2 | W9 S2, 1×1 @ 72.5/70 |
 | Row | 11 | 3 | none — row is never tested |
 
-**77 entries total, 4 tests.** All 77 weights were recomputed from the fractions and matched the values Excel had cached — the arithmetic is sound and there is no rounding drift to reproduce. That comparison is the golden test.
+**77 entries total, 4 tests.** All 77 weights were recomputed from the fractions and matched the values Excel had cached — the arithmetic is sound and there is no rounding drift to reproduce. That comparison is the golden test, and it is the one place the example maxes are legitimately used: the fixture asks whether the generator reproduces Excel's own output for Excel's own inputs.
 
 Three oddities to know about:
 
@@ -131,7 +135,8 @@ The LLM appears twice: choosing the route, and phrasing the result. It never loo
 
 ## 8. Data and its limits
 
-- **The template and 1RMs** are the athlete's own, and are the only real training data in the project.
+- **The template is the athlete's own** and is the only real training data the repository ships. The workbook's 1RMs are **examples** — the maxes the planner computes from are entered by the athlete with the date they tested them, and the importer never reads the sheet's own (§4, ADR-0003).
+- **Synthetic 1RMs exist for local testing only**, written by `make seed-dev-1rms` and flagged `is_synthetic` with `source = 'synthetic'`, which a database CHECK keeps consistent. `is_synthetic` is the authoritative "is this real?"; every consumer filters on it and the UI must say so while any row has it set (ADR-0004).
 - **Training notes** ("knee tight at depth", "slept 5 h, bar slow") are embedded locally and retrieved by meaning. Safety screening of notes is **keyword-based**, deliberately not embedding-based.
 - **Demo notes are synthetic** and flagged as such in the database and the README.
 - **OpenPowerlifting** (public domain) calibrates the simulator's progression distributions.

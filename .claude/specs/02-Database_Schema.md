@@ -1,3 +1,4 @@
+
 ## 1. Overview
 
 Define every table as a **SQLModel** class and create them through **Alembic** migrations in Postgres, with the **pgvector** extension enabled.
@@ -58,10 +59,15 @@ Seeded by migration.
 | lift_code | TEXT | FK → lift.code, not null |
 | kg | NUMERIC(6,2) | Not null, > 0 |
 | set_on | DATE | Not null |
-| source | TEXT | `tested`, `estimated` or `imported` |
+| source | TEXT | `tested`, `estimated`, `imported` or `synthetic` |
+| is_synthetic | BOOLEAN | Not null, default false (dev seed rows) |
 | block_id | UUID | FK → block.id, nullable |
 
 Index: `(athlete_id, lift_code, set_on DESC)`. The current 1RM = newest row per lift.
+
+CHECK: `source <> 'synthetic' OR is_synthetic` — the two columns that answer "is this real?" cannot disagree.
+
+> **Revised 2026-10-12 per ADR-0004** (migration `0003`). `source` originally allowed only `tested`, `estimated` or `imported`, and `is_synthetic` did not exist. The planner needs a max before it can compute anything and the spreadsheet's are examples (ADR-0003), so local testing had no input; `make seed-dev-1rms` now supplies one that cannot pass as real. **`is_synthetic` is the authoritative flag — filter on it, not on `source`**, since a row may be flagged while carrying any source (a faked `tested` max exercises spec 06's test-completion path).
 
 ---
 
@@ -254,12 +260,17 @@ Index: HNSW on `embedding vector_cosine_ops`.
 
 - `0001_init`: `CREATE EXTENSION IF NOT EXISTS vector;` + all tables + indexes
 - `0002_seed_lifts`: inserts the 5 lifts (idempotent `ON CONFLICT DO NOTHING`)
+- `0003_synthetic_one_rep_max`: adds `one_rep_max.is_synthetic`, widens the `source` CHECK to include `synthetic`, and adds the consistency CHECK (added 2026-10-12 per ADR-0004; see §4C)
 
 ---
 
 ### C. `scripts/seed_athlete.py`
 
-- Creates one athlete "Basil" (if none exists) with 1RMs from the sheet as `source = imported`: deadlift 160, squat 140, bench 105, press 70, row 105
+- Creates one athlete "Basil" (if none exists). Nothing else.
+
+> **Revised 2026-10-12 per ADR-0003.** This section originally read: *"Creates one athlete 'Basil' (if none exists) with 1RMs from the sheet as `source = imported`: deadlift 160, squat 140, bench 105, press 70, row 105."*
+>
+> Those are the spreadsheet's **example** maxes, and the file records no date they were tested. The app uses only 1RMs the athlete enters themselves, together with that date, so the seed writes none and `ONE_RMS`/`SET_ON` are deleted. The only route by which a `one_rep_max` row may exist is the athlete entering one (spec 17).
 
 ---
 
@@ -312,7 +323,7 @@ Index: HNSW on `embedding vector_cosine_ops`.
 
 - `make migrate` on an empty database creates all 14 tables and the `vector` extension
 - Running it twice is a no-op
-- `make seed` creates the athlete and five 1RM rows once
+- `make seed` creates the athlete once (revised 2026-10-12 per ADR-0003: no 1RM rows — see §5C)
 
 ---
 
