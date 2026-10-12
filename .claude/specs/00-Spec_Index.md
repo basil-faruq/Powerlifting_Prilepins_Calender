@@ -51,7 +51,7 @@ powerlifting-planner/
 ├── Makefile
 ├── README.md
 ├── data/
-│   └── B1_Mine.xlsx                  # your template (committed)
+│   └── B1_Mine.xlsx                  # your template
 ├── backend/
 │   ├── pyproject.toml
 │   ├── alembic.ini

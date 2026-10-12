@@ -28,6 +28,7 @@ Run from the repository root unless noted.
 | `make lint` | `ruff check .` + `ruff format --check .` |
 | `make migrate` | `alembic upgrade head` |
 | `make import` | Import `data/B1_Mine.xlsx` as template `B1` |
+| `make seed-dev-1rms` | **Synthetic** 1RMs for local testing (`ARGS=--clear` removes them) |
 | `make demo-data` | Seed athlete + template + synthetic notes |
 
 Ollama runs **natively on the host**, never in Compose — it needs the GPU. Pull `qwen2.5:14b` and `nomic-embed-text` before anything that touches the agent.
@@ -69,6 +70,7 @@ These come from `docs/adr/`. Breaking one requires a superseding ADR, not a conv
 6. **Side effects live in Temporal activities.** No DB, HTTP, `datetime.now()`, randomness or solver calls inside workflow functions.
 7. **Migrations only.** No `create_all()` in application code.
 8. **Uncertainty is surfaced.** Simulator output is percentiles plus an assumptions list, never a single predicted number.
+9. **A 1RM comes from the athlete, with the date they tested it.** No importer, seed, migration or fallback may invent one. The spreadsheet's maxes are examples and its `1RM` sheet is never read; the only legitimate use of those values is the golden fixture, which records them as `one_rm_kg` inputs. Test data is permitted solely through `make seed-dev-1rms`, which flags every row `is_synthetic` — the authoritative "is this real?", which every consumer filters on and the UI must surface while any row has it set.
 
 ---
 
@@ -105,9 +107,11 @@ Use `/ship-feature` to commit, push, open a PR, squash-merge and clean up. It ve
 - Never commit `data/B1_Mine.xlsx` file.
 - Never commit computed weights into the template — only sets, reps and the % fraction.
 - Never commit anything related to ADR plugins and generated ADRs in `docs/adr/`.
+- After implementation of a spec from `.claude/specs/`, always create a new ADR document with date and time, specifying whether the spec was accepted as it is, or whether some modification was done to original work. Always point out the modification.
 - Do not hand-edit `data/B1_Mine.xlsx`. Its two known errors are worked around in code and documented in spec 03.
 - Do not add authentication, multi-user support or a second athlete. Single-athlete is a recorded decision, not an oversight.
 - Do not swap `pydantic-ai` for LangChain or LangGraph. Only one agent framework belongs in this repo.
 - Default `LLM_PROVIDER=ollama`. `anthropic` is for demos only; embeddings stay local in **every** mode.
 - No provider SDK may be imported outside `planner_core/llm.py`.
 - When a threshold is a guess (missed-session tiers, Banister constants), label it as a starting value in both code and UI rather than presenting it as derived.
+- Never seed, default or back-fill a 1RM outside `scripts/seed_dev_one_rms.py`, and never reuse the spreadsheet's example maxes (160/140/105/70/105) as test values — a reader must always be able to tell where a number came from.

@@ -1,5 +1,6 @@
 # Secrets and local config
 .env
+.env.example
 .env.local
 .claude.json
 .claude/settings.local.json
@@ -19,6 +20,7 @@ data/*.xlsx
 .claude/site/
 .claude/skills/adr-*/
 .claude/templates/
+docs/adr/
 
 # Python
 __pycache__/
