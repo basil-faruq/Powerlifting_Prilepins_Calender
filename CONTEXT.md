@@ -44,7 +44,7 @@ The project is a production-planning agent whose domain happens to be a gym. The
 - **Session** — one slot on one date. Carries one or more lifts' set blocks.
 - **Entry** — one row of the template: lift × week × slot, with sets, reps and intensity.
 - **Intensity (pct)** — percentage of 1RM, stored as an exact fraction such as `70/120`.
-- **Working weight** — `FLOOR(1RM × pct, increment)`. The spreadsheet uses a 1 kg increment.
+- **Working weight** — `1RM × pct`, snapped to a multiple of the athlete's `plate_increment_kg`. The spreadsheet uses `FLOOR(…, 1)`; a new athlete defaults to **5 kg, nearest**, because plates load in pairs and the gym's smallest is 2.5 kg, so the total on the bar moves in 5 kg steps (ADR-0008).
 - **Rep max percentage (P1RM)** — the share of 1RM a trained lifter can hold for *n* reps. Brzycki-style table.
 - **Relative intensity** — `pct ÷ P1RM(reps)`. 1.0 means the set is at the limit for that rep count. Above 1.0 is overreaching, which the template only permits from week 7.
 - **Overreach week** — week 7. Before it, relative intensity above 1.0 is a violation; from it, a warning.
@@ -149,7 +149,6 @@ The LLM appears twice: choosing the route, and phrasing the result. It never loo
 Recorded here so they are not silently decided in code. Each becomes a `proposed` ADR when addressed.
 
 - Rest rules between *different* lifts — is deadlift allowed the day after squat? Currently a 1-day minimum with no strong justification.
-- Rounding: 1 kg floor, matching the spreadsheet, versus 2.5 kg plate reality in a real gym.
 - Whether row, as an untested accessory, should be droppable automatically when a week is compressed.
 - The missed-session thresholds above.
 - After a long break: restart all 11 weeks, or allow a shortened block.

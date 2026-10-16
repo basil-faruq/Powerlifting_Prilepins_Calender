@@ -33,12 +33,17 @@ The generator (spec 04) still produces normal blocks. Shaping only runs when you
 
 ### A. `ShapingProblem`
 
-- `reference: list[RefEntry]` — per lift / week / slot: reference `pct`, `sets`, `reps` (from the template, resampled to `weeks`)
+> **Amended 2026-10-14.** The per-lift `week1_band` and the per-lift ramp
+> peak are infeasible against the author's own template. See §15.
+
+- `reference: tuple[RefEntry, ...]` — per lift / week / slot: `p` in tenths of a percent, `sets`, `reps`, the authored `(pct_num, pct_den)` pair, `is_test`, and `exact` (did this row come from a template week, or from interpolating between two?)
 - `weeks: int` (6–14)
-- `test_week: dict[str, int]`
-- `overreach_from_week: int`
-- `week1_band: dict[str, tuple[Decimal, Decimal]]` — default 0.55–0.60 for squat / bench / deadlift, 0.70–0.72 for press, 0.55–0.60 for row
-- `weights: ShapingWeights` — `pct_dev = 10`, `vol_dev = 10`, `prilepin = 1`, `trend = 1`, `jump = 2`
+- `test_week: dict[str, int]`, `test_slot: dict[str, int]` — derived from the reference unless a caller moves one
+- `ramp_end: dict[tuple[str, int], int]` — **per `(lift, slot)`**: the last week that must not dip, which is that slot's own peak, not its lift's test week
+- `week1_band: dict[tuple[str, int], tuple[int, int]]` — **per `(lift, slot)`**, derived as the reference's own week-1 value ± `week1_margin_tenths`
+- `overreach_from_week: int` — rescaled when `weeks` differs from the template's
+- `weights: ShapingWeights` — `pct_dev = 10`, `vol_dev = 10`, **`rep_dev = 10`**, `prilepin = 1`, `trend = 1`, `jump = 2`
+- `config: ShapingConfig` — bounds and tolerances, each a labelled starting value
 
 ---
 
@@ -59,11 +64,12 @@ The generator (spec 04) still produces normal blocks. Shaping only runs when you
 
 **Hard constraints**
 
-- Within each slot, `p[w+1] ≥ p[w]` for weeks before the lift's **peak week** (its test week; for row, which has no test, the week of its highest reference %, week 7 in your sheet)
-- Test entry: `sets = 1`, `reps = 1`, `p ≥ 1000`
+- Within each slot, `p[w+1] ≥ p[w]` for weeks up to **that slot's** `ramp_end`
+- Test entry: fixed in the domain at `sets = 1`, `reps = 1`, `p ∈ [1000, 1100]`
 - `p ≤ 1100` everywhere
-- Week 1 `p` inside `week1_band`
-- Relative intensity via a precomputed **allowed table** of `(p, reps)` pairs (`AddAllowedAssignments`):
+- Week 1 `p` inside its slot's `week1_band`
+- **`pct_early` and the row cap**, folded into the `p` domain as a per-entry ceiling: 1100 only from the week before that lift's test, and 1000 for a lift with no test at all. Spec 09 omitted both; without them the solver returns blocks the validator refuses.
+- Relative intensity via `AddElement` over a **twelve-entry** table of per-reps bounds, then `p ≤ bound`. The bound is **inclusive**: the author's press week 5 sits at exactly 1.0000.
     - weeks before `overreach_from_week`: `p / rep_max_pct(reps) ≤ 1.0`
     - other weeks: `≤ 1.10`
 
@@ -71,13 +77,17 @@ The generator (spec 04) still produces normal blocks. Shaping only runs when you
 
 - `pct_dev × |p − ref_p|` (`AddAbsEquality`)
 - `vol_dev × |vol − ref_vol|`
-- `prilepin ×` penalty looked up from a precomputed table indexed by `(p, vol)` (`AddElement` on a flattened index) — 0 inside the zone, distance outside
+- **`rep_dev × |reps − ref_reps|`** — not in the original spec, and mandatory
+- `prilepin ×` distance outside the zone, with the zone fixed from the **reference** intensity at build time
 - `trend ×` `max(0, weekly_vol[w+1] − weekly_vol[w])` per lift during the ramp
-- `jump ×` `max(0, p[w+1] − p[w] − 75)` (jumps over 7.5 points)
+- `jump ×` `max(0, p[w+1] − p[w] − 75)` — **soft only**; the author's own block breaks it six times
+
+The model is seeded with the reference via `add_hint`. Measured: 10.1 s → 0.4 s single-threaded.
 
 **Output**
 
-- `ShapedBlock(entries: list[ShapedEntry], objective, stats)` — converted to `DraftLift`s with weights via `round_weight`
+- `ShapedBlock(entries, weeks, test_week, overreach_from_week, cost, status, stats)`, or `ShapingInfeasible(reason, stats)` — returned, never raised. Converted to a `BlockDraft` by `to_draft`, which calls `generate_block`: `ShapedEntry` satisfies `TemplateRow` structurally, so the dates, the seq numbering and every weight come from the golden-tested path.
+- An entry the solver left untouched keeps its **authored** `(pct_num, pct_den)`. `583/1000` and `70/120` are the same intensity to four decimals and different kilograms once rounded.
 
 ---
 

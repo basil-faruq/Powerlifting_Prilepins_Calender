@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-PSDrive -PSProvider FileSystem | Select-Object Name, @{n='FreeGB';e={[math]::Round\\($_.Free/1GB,2\\)}}, @{n='UsedGB';e={[math]::Round\\($_.Used/1GB,2\\)}}; \"--- uv cache ---\"; $c = \"$env:LOCALAPPDATA\\\\uv\\\\cache\"; if \\(Test-Path $c\\) { \"{0:N2} GB\" -f \\(\\(Get-ChildItem $c -Recurse -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum\\).Sum/1GB\\) })"
+    ]
+  }
+}

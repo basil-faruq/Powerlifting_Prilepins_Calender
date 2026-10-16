@@ -7,6 +7,7 @@ The schema is created by Alembic migrations only (spec 02). There is no
 from collections.abc import Generator
 
 from sqlalchemy import text
+from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, create_engine
 
@@ -22,11 +23,23 @@ from planner_core.config import get_settings
 # twice that before giving up.
 CONNECT_TIMEOUT_S = 2
 
-engine = create_engine(
-    get_settings().database_url,
-    pool_pre_ping=True,
-    connect_args={"connect_timeout": CONNECT_TIMEOUT_S},
-)
+
+def make_engine(url: str) -> Engine:
+    """An engine for `url`, configured the way this project needs one.
+
+    Factored out of the module-level `engine` for the test suite (ADR-0002
+    modification 16): route tests need an engine pointed at `planner_test`, and
+    the alternative is duplicating the timeout and pre-ping settings in
+    `conftest.py` where they would quietly drift.
+    """
+    return create_engine(
+        url,
+        pool_pre_ping=True,
+        connect_args={"connect_timeout": CONNECT_TIMEOUT_S},
+    )
+
+
+engine = make_engine(get_settings().database_url)
 
 
 def get_session() -> Generator[Session, None, None]:

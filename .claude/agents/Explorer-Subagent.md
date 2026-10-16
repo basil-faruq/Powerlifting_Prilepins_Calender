@@ -1,7 +1,7 @@
 ---
 name: explorer-subagent
 description: "Use this agent at the beginning of an exploration task or each session to explore the codebase and find relevant files, usages, dependencies, and context for a given research goal or problem statement."
-argument-hint: Find files, usages, dependencies, and context related to: <research goal or problem statement>
+argument-hint: "Find files, usages, dependencies, and context related to: <research goal or problem statement>"
 tools: Read, Bash, Glob, Grep
 model: sonnet
 ---

@@ -1,6 +1,7 @@
 """Block generator tests.
 
 The golden test builds its template entries from the **committed fixture**
+(via `tests/golden.py`, shared with the validator suite)
 rather than from the gitignored workbook, so it runs on a fresh clone -- which
 matters, because CLAUDE.md non-negotiable #4 makes it the project's single
 strongest correctness claim and a skipped test proves nothing. Each fixture row
@@ -19,10 +20,8 @@ Database tests request `db_session` and skip when Postgres is unreachable.
 from __future__ import annotations
 
 import datetime as dt
-import json
 import uuid
 from decimal import Decimal
-from pathlib import Path
 
 import pytest
 from sqlmodel import Session, select
@@ -36,14 +35,9 @@ from domains.strength.schemas import (
     LoggedSession,
     ParsedEntry,
 )
-
-GOLDEN = Path(__file__).resolve().parent / "fixtures" / "b1_expected_weights.json"
-
-# The author's own layout: Day 1 Monday, Day 2 Wednesday, Day 3 Friday.
-MON_WED_FRI = {1: 0, 2: 2, 3: 4}
-
-# A Monday, as `block.start_date` requires.
-START = dt.date(2026, 1, 5)
+from tests.golden import MON_WED_FRI, START
+from tests.golden import athlete as _athlete
+from tests.golden import template as _template
 
 # Spec §12's documented spot checks: (lift, week, slot, sets, reps, weight).
 SPOT_CHECKS = [
@@ -62,56 +56,6 @@ MAXES = {
     "press": Decimal("62.5"),
     "row": Decimal("87.5"),
 }
-
-
-@pytest.fixture(scope="module")
-def golden_rows() -> list[dict]:
-    """The committed oracle. No skip: the file is version-controlled."""
-    return json.loads(GOLDEN.read_text(encoding="utf-8"))
-
-
-@pytest.fixture(scope="module")
-def golden_entries(golden_rows) -> tuple[ParsedEntry, ...]:
-    """The fixture's 77 rows as template entries the generator can consume."""
-    return tuple(
-        ParsedEntry(
-            lift_code=row["lift"],
-            variation=row["variation"],
-            week=row["week"],
-            slot=row["slot"],
-            sets=row["sets"],
-            reps=row["reps"],
-            pct_num=Decimal(row["pct_num"]),
-            pct_den=Decimal(row["pct_den"]),
-            is_test=row["is_test"],
-            source_sheet=f"B1 {row['lift'].title()}",
-            source_row=index + 2,
-        )
-        for index, row in enumerate(golden_rows)
-    )
-
-
-@pytest.fixture(scope="module")
-def golden_maxes(golden_rows) -> dict[str, Decimal]:
-    """The example maxes Excel computed the fixture's weights from.
-
-    Read from the fixture rather than typed in, so the inputs cannot drift from
-    the outputs they produced.
-    """
-    return {row["lift"]: Decimal(row["one_rm_kg"]) for row in golden_rows}
-
-
-def _athlete(increment: str = "1.0", rounding: str = "floor") -> models.Athlete:
-    """An athlete, unsaved. The generator only reads three fields."""
-    return models.Athlete(
-        name="test-athlete",
-        plate_increment_kg=Decimal(increment),
-        rounding=rounding,
-    )
-
-
-def _template(weeks: int = 11, slots: int = 3) -> models.BlockTemplate:
-    return models.BlockTemplate(name="B1-test", weeks=weeks, slots=slots, overreach_from_week=7)
 
 
 def _entry(
@@ -159,20 +103,6 @@ def _lift_at(draft: BlockDraft, lift: str, week: int, slot: int) -> DraftLift:
 
 
 # --- The golden test ------------------------------------------------------
-
-
-@pytest.fixture(scope="module")
-def golden_draft(golden_entries, golden_maxes) -> BlockDraft:
-    """The authored block, generated with the spreadsheet's own settings."""
-    return generator.generate_block(
-        _athlete("1.0", "floor"),
-        _template(),
-        golden_entries,
-        golden_maxes,
-        sorted(golden_maxes),
-        START,
-        MON_WED_FRI,
-    )
 
 
 def test_the_golden_block_has_thirty_three_sessions(golden_draft):

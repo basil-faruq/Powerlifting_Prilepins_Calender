@@ -5,7 +5,7 @@
 #   ollama pull qwen2.5:14b
 #   ollama pull nomic-embed-text
 
-.PHONY: help infra infra-down api migrate migrate-sql seed seed-dev-1rms import test lint format
+.PHONY: help infra infra-down api migrate migrate-sql seed seed-dev-1rms calibrate import test lint format
 
 help:
 	@echo "make infra       Postgres (pgvector) + Temporal dev server in Docker"
@@ -16,6 +16,7 @@ help:
 	@echo "make seed        Create the athlete (1RMs are entered in the app)"
 	@echo "make import      Import data/B1_Mine.xlsx as template B1 (pattern only)"
 	@echo "make seed-dev-1rms  SYNTHETIC 1RMs for local testing (ARGS=--clear to remove)"
+	@echo "make calibrate   Simulator gains from the OpenPowerlifting CSV (ARGS required)"
 	@echo "make test        pytest"
 	@echo "make lint        ruff check + ruff format --check"
 	@echo "make format      ruff format"
@@ -53,6 +54,14 @@ seed:
 #   make seed-dev-1rms ARGS="--clear"           remove them; real rows kept
 seed-dev-1rms:
 	cd backend && uv run python -m scripts.seed_dev_one_rms $(ARGS)
+
+# Simulator gains (spec 10). The maxes are required arguments and are never read
+# from the database, so a synthetic-seeded one cannot calibrate against invented
+# numbers. The CSV (~1 GB, https://openpowerlifting.org/data) is never committed.
+#
+#   make calibrate ARGS="--csv ../openpowerlifting.csv --squat 145 --bench 100 --deadlift 180"
+calibrate:
+	cd backend && uv run python -m scripts.calibrate_simulator $(ARGS)
 
 # Imports the block's pattern only -- sets, reps and intensity. Never the
 # weights Excel computed, and never its `1RM` sheet: those maxes are examples.

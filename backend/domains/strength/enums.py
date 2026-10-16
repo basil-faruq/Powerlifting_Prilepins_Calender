@@ -21,6 +21,8 @@ the real `Literal` objects, not stringified annotations.
 
 from typing import Literal, get_args
 
+from planner_core import proposal as _proposal
+
 # --- Lifts ----------------------------------------------------------------
 # `row` is the only accessory and the only lift that is never tested
 # (CONTEXT.md §4).
@@ -61,10 +63,24 @@ BlockStatus = Literal["draft", "approved", "active", "paused", "done", "abandone
 # describes a session's *current state*. Do not collapse them.
 PlannedSessionStatus = Literal["planned", "done", "missed", "moved", "skipped"]
 
+# The statuses that put a session's date beyond further argument: it was
+# trained, or it was written off. A proposal may not re-date these, the
+# calendar solver pins them, and spec 08's policy reads them as history.
+#
+# Note what is *not* here. A session the athlete intends to make up stays
+# `planned` with a date in the past until a reschedule is approved -- that is
+# what lets the solver re-place it. `missed` means written off, not "did not
+# happen yet" (spec 08).
+HISTORY_STATUSES: tuple[str, ...] = ("done", "missed")
+
 # --- Proposals ------------------------------------------------------------
-ProposalKind = Literal["new_block", "reschedule", "weekday_change"]
-ProposalStatus = Literal["pending", "approved", "rejected", "superseded"]
-ProposalSource = Literal["chat", "workflow"]
+# Re-exported from `planner_core.proposal`, not defined here: `Proposal` is
+# generic and domain-agnostic, so it is typed by these literals and cannot
+# import them from a domain. Keeping one definition means `models.Proposal`'s
+# CHECK constraints and the engine's own types cannot drift (spec 05).
+ProposalKind = _proposal.ProposalKind
+ProposalStatus = _proposal.ProposalStatus
+ProposalSource = _proposal.ProposalSource
 
 # --- Decision audit trail -------------------------------------------------
 # `safety` and `clarify` are the deterministic hard filters' outcomes; the other

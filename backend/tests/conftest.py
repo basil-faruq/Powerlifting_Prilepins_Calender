@@ -20,6 +20,7 @@ actually ships — unexercised.
 from __future__ import annotations
 
 from collections.abc import Generator
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -32,7 +33,9 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.pool import NullPool
 from sqlmodel import Session
 
+from domains.strength.schemas import BlockDraft, ParsedEntry
 from planner_core.config import get_settings
+from tests import golden
 
 TEST_DB_NAME = "planner_test"
 # `CREATE DATABASE` cannot run from inside the database being created, so the
@@ -68,6 +71,54 @@ def client() -> TestClient:
     from api.main import app
 
     return TestClient(app)
+
+
+@pytest.fixture
+def api_client(db_session: Session) -> Generator[TestClient, None, None]:
+    """A client whose routes run against `db_session`, and roll back with it.
+
+    The dependency override is what ADR-0002 modification 16 deferred to spec
+    06: `api.main` builds its engine from `DATABASE_URL` at import, so without
+    this a route test would write to the developer's real `planner` database.
+
+    `raise_server_exceptions=False` so a test can assert on the status an
+    exception *handler* produced rather than having the exception re-raised
+    into the test -- which is the only way to check spec 06 §13's codes.
+    """
+    from api.main import app
+    from planner_core.db import get_session
+
+    app.dependency_overrides[get_session] = lambda: db_session
+    try:
+        yield TestClient(app, raise_server_exceptions=False)
+    finally:
+        app.dependency_overrides.clear()
+
+
+# --- The golden block -----------------------------------------------------
+# Shared by the generator suite (which proves the 77 weights) and the validator
+# suite (which proves the author's own plan is accepted, CLAUDE.md #5). Built
+# from the committed fixture, so neither skips without the workbook.
+
+
+@pytest.fixture(scope="session")
+def golden_rows() -> list[dict]:
+    return golden.load_rows()
+
+
+@pytest.fixture(scope="session")
+def golden_entries(golden_rows) -> tuple[ParsedEntry, ...]:
+    return golden.entries_from(golden_rows)
+
+
+@pytest.fixture(scope="session")
+def golden_maxes(golden_rows) -> dict[str, Decimal]:
+    return golden.maxes_from(golden_rows)
+
+
+@pytest.fixture(scope="session")
+def golden_draft(golden_entries, golden_maxes) -> BlockDraft:
+    return golden.draft_from(golden_entries, golden_maxes)
 
 
 @pytest.fixture(scope="session")
@@ -186,7 +237,12 @@ def db_session(db_engine: sa.Engine) -> Generator[Session, None, None]:
     connection = db_engine.connect()
     transaction = connection.begin()
     try:
-        with Session(bind=connection) as session:
+        # `create_savepoint` so a `session.commit()` *inside* the code under
+        # test releases a savepoint instead of committing this outer
+        # transaction. Spec 06's routes commit (the services only flush), and
+        # without this the first API test would leave its athlete behind for
+        # every later test to trip over.
+        with Session(bind=connection, join_transaction_mode="create_savepoint") as session:
             yield session
     finally:
         # A test that provoked an IntegrityError has already had its

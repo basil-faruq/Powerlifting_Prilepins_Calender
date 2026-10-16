@@ -1,11 +1,13 @@
 """Turning a template plus the athlete's maxes into a dated, loaded block.
 
-Four functions, one of which touches the database:
+Five functions, one of which touches the database:
 
 * `check_weekday_map` -- is this choice of training days coherent at all?
 * `generate_block` -- the template, the maxes and a start Monday become 33
   dated sessions carrying 77 weights. A pure function.
 * `persist_block` -- the only writer. Turns a draft into rows.
+* `draft_session_of` -- its inverse, reading rows back as a `DraftSession` so
+  a running block can be re-planned. Pure.
 * `next_block_one_rms` -- what the athlete's maxes become after the block.
   Also pure: it reads the plan from the draft and the performance from logs.
 
@@ -318,21 +320,20 @@ def _draft_lift(entry: TemplateRow, one_rm: Decimal, athlete: models.Athlete) ->
 # --- Persistence ----------------------------------------------------------
 
 
-def persist_block(
+def persist_block_row(
     session: Session,
     draft: BlockDraft,
     status: enums.BlockStatus = "draft",
 ) -> models.Block:
-    """Write a draft as `block`, `planned_session` and `planned_lift` rows.
+    """Write the `block` row alone, with no sessions.
 
-    Flushes but never commits, matching `importer.persist_template`: the caller
-    owns the transaction, so the whole block lands or none of it does, and a
-    test can roll it back.
+    Split from `persist_block` for spec 06, which needs a block to exist at
+    *proposal* time -- `proposal.block_id` is NOT NULL -- while its sessions
+    stay unwritten until a human approves (CLAUDE.md non-negotiable #2). A
+    `draft` block with no sessions is the honest representation of that state:
+    the plan lives in the proposal's payload until then.
 
-    Note spec 06 persists a block at proposal time but its sessions only at
-    approval (`approve_proposal` is the single write path, CLAUDE.md
-    non-negotiable #2). Splitting this to match is spec 06's call to make, not
-    work to pull forward here.
+    Flushes but never commits, matching `importer.persist_template`.
     """
     # `.scalar` rather than `.exec`: the latter hands back a Row for a plain
     # SQLAlchemy select, and a Row does not add to an int.
@@ -355,20 +356,37 @@ def persist_block(
     )
     session.add(block)
     session.flush()
+    return block
 
-    for draft_session in draft.sessions:
+
+def persist_planned_sessions(
+    session: Session,
+    block: models.Block,
+    plan: Sequence[DraftSession],
+) -> list[models.PlannedSession]:
+    """Write `plan` as `planned_session` + `planned_lift` rows under `block`.
+
+    The other half of the split. Spec 06 calls this only from
+    `approve_proposal`, which is what makes approval the single write path for
+    the schedule.
+
+    Flushes but never commits. `original_date` is set equal to `date` here; a
+    later reschedule moves `date` and leaves it, so the original plan stays
+    visible.
+    """
+    written = []
+    for draft_session in plan:
         planned = models.PlannedSession(
             block_id=block.id,
             week=draft_session.week,
             slot=draft_session.slot,
             seq=draft_session.seq,
             date=draft_session.date,
-            # Equal on creation; a reschedule moves `date` and leaves this, so
-            # the original plan stays visible.
             original_date=draft_session.date,
         )
         session.add(planned)
         session.flush()
+        written.append(planned)
 
         for lift in draft_session.lifts:
             session.add(
@@ -386,6 +404,69 @@ def persist_block(
                 )
             )
     session.flush()
+    return written
+
+
+def draft_session_of(
+    row: models.PlannedSession,
+    lifts: Sequence[models.PlannedLift],
+) -> DraftSession:
+    """Read `planned_session` + `planned_lift` rows back as a `DraftSession`.
+
+    The declared inverse of `persist_planned_sessions`, and kept beside it so
+    the pair cannot drift. Spec 08 needs it: the solver, the validator and the
+    policy all speak `DraftSession`, while a block that is already running
+    lives in the database.
+
+    **The lift order is re-sorted here, deliberately.** `generate_block` orders
+    a session's lifts by `enums.LIFT_CODES` -- squat before bench, the order the
+    athlete trains them in -- but `services.lifts_of` reads them back ordered by
+    `lift_code`, which is alphabetical. Without this sort a round trip through
+    the database silently turns "squat/bench" into "bench/squat", and every
+    sentence the policy writes about a session names the lifts in the wrong
+    order. Sorting on the way out rather than changing the query keeps the
+    ordering rule in one place: the same key `generate_block` uses.
+
+    `date` is the row's current date, not `original_date`: a block that has
+    already been rescheduled must be re-planned from where it actually stands.
+    """
+    lift_order = {lift: index for index, lift in enumerate(enums.LIFT_CODES)}
+    ordered = sorted(lifts, key=lambda lift: (lift_order[lift.lift_code], lift.variation or ""))
+    return DraftSession(
+        week=row.week,
+        slot=row.slot,
+        seq=row.seq,
+        date=row.date,
+        lifts=tuple(
+            DraftLift(
+                lift_code=lift.lift_code,
+                variation=lift.variation,
+                sets=lift.sets,
+                reps=lift.reps,
+                pct_num=lift.pct_num,
+                pct_den=lift.pct_den,
+                weight_kg=lift.weight_kg,
+                rel_intensity=lift.rel_intensity,
+                is_test=lift.is_test,
+            )
+            for lift in ordered
+        ),
+    )
+
+
+def persist_block(
+    session: Session,
+    draft: BlockDraft,
+    status: enums.BlockStatus = "draft",
+) -> models.Block:
+    """Write a draft as `block`, `planned_session` and `planned_lift` rows.
+
+    Both halves at once. Spec 06's API never calls this -- it writes the row at
+    proposal time and the sessions at approval -- but the generator suite and
+    any script that wants a whole block in one step do.
+    """
+    block = persist_block_row(session, draft, status)
+    persist_planned_sessions(session, block, draft.sessions)
     return block
 
 
