@@ -70,6 +70,8 @@ Each is a thin wrapper; the raw command is given so the Makefile is never the on
 | `make seed` | `cd backend && uv run python -m scripts.seed_athlete` |
 | `make import` | `cd backend && uv run python -m scripts.import_template ../data/B1_Mine.xlsx $(ARGS)` |
 | `make seed-dev-1rms` | `cd backend && uv run python -m scripts.seed_dev_one_rms $(ARGS)` |
+| `make calibrate` | `cd backend && uv run python -m scripts.calibrate_simulator $(ARGS)` |
+| `make check-llm` | `cd backend && uv run python -m scripts.check_llm $(ARGS)` |
 | `make test` | `cd backend && uv run pytest` |
 | `make lint` | `cd backend && uv run ruff check . && uv run ruff format --check .` |
 | `make format` | `cd backend && uv run ruff format .` |
@@ -78,7 +80,7 @@ Each is a thin wrapper; the raw command is given so the Makefile is never the on
 
 ```
 backend/
-  planner_core/      domain-agnostic engine — config, db, (later) proposal, llm, tracing
+  planner_core/      domain-agnostic engine — config, db, errors, proposal, llm, (later) tracing
   domains/strength/  powerlifting plug-in — enums, models (14 SQLModel tables)
   migrations/        Alembic; the only way the schema ever changes
   api/               FastAPI app
@@ -99,6 +101,33 @@ Two notes that cost time otherwise:
 
 - `CORS_ORIGINS` is a list, so it must be JSON: `CORS_ORIGINS=["http://localhost:5173"]`.
 - `LLM_PROVIDER=anthropic` without `ANTHROPIC_API_KEY` fails at startup, by design. The default is `ollama`, and embeddings stay local in either mode.
+
+## Models
+
+Ollama runs natively on the host, never in Compose, because it needs the GPU. Pull both models once:
+
+```bash
+ollama pull qwen2.5:14b        # the agent and the router
+ollama pull nomic-embed-text   # embeddings, 768 dimensions
+```
+
+`LLM_PROVIDER` switches the agent between local Qwen and Claude and changes nothing else — no other module imports a provider SDK, so the router, the tools and the tests are identical either way. **Embeddings ignore that switch and always run on Ollama.** That is not an omission: the vectors stored in `note_chunk` are only comparable to each other, so letting a demo flag change the embedding model would silently invalidate every note already indexed.
+
+Before building anything on the agent, measure it:
+
+```bash
+make check-llm
+```
+
+It asks five questions that cannot be answered without calling a tool and reports how many actually did. **Target is 5/5.** The design gives the model no authority to compute anything — every number it reports has to come back from a tool it chose to call — so unreliable tool calling does not degrade the output, it invents weights. Below 5/5, move up to `qwen2.5:32b` before going further.
+
+### Changing the embedding model
+
+`OLLAMA_EMBED_MODEL` cannot be changed on its own. The three have to move together:
+
+1. Set `EMBED_DIM` to the new model's width. `OllamaEmbedder` refuses a vector of any other size rather than letting it reach the database.
+2. Migrate `note_chunk.embedding`, which is `VECTOR(768)` — a different width is a schema change, not a setting.
+3. Re-embed everything with `POST /athletes/{id}/notes/reindex`. Vectors from two different models are not comparable, so a half-migrated table returns confident nonsense rather than an error.
 
 ## Schema
 

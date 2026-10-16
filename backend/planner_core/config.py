@@ -10,7 +10,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import SecretStr, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -37,7 +37,9 @@ class Settings(BaseSettings):
     ollama_chat_model: str = "qwen2.5:14b"
     ollama_router_model: str = "qwen2.5:14b"
     ollama_embed_model: str = "nomic-embed-text"
-    embed_dim: int = 768
+    # Bounded because it sizes `note_chunk.embedding`: a zero or negative value
+    # would make every embedding fail with a message blaming the model.
+    embed_dim: int = Field(default=768, ge=1)
 
     # Anthropic is for demos only. Embeddings stay local in every mode.
     anthropic_api_key: SecretStr | None = None

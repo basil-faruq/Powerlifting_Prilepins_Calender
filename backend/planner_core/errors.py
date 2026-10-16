@@ -9,6 +9,11 @@ already a `planner_core` type, so nothing here imports from `domains`.
 Only the error-to-status mapping lives in `api/main.py`; the services raise
 these and never touch `HTTPException`, so `approve_proposal` stays callable from
 a Temporal activity in spec 15, where there is no request to fail.
+
+`LlmUnavailable` and its two subclasses join them from spec 11. They are not
+part of the proposal lifecycle, but they are engine-level for the same reason:
+`planner_core/llm.py` is the only module allowed to import a provider SDK
+(CLAUDE.md), so the errors it raises cannot live in a domain either.
 """
 
 from __future__ import annotations
@@ -105,3 +110,59 @@ class AlreadyDecided(PlannerError):
     def __init__(self, status: str) -> None:
         self.status = status
         super().__init__(f"proposal is already {status}")
+
+
+class LlmUnavailable(PlannerError):
+    """The local model service could not serve a request. → 503.
+
+    Separate from everything above because it says nothing about the *plan*: the
+    request was well formed and the plan may be perfect, the machine that embeds
+    or routes it is simply not there. 503 rather than 500 for the same reason --
+    the fix is to start Ollama, not to change the request.
+
+    Spec 12 catches this base class when indexing a note, so that a training log
+    is never lost to a model being down: the log is saved and the note is left
+    for `reindex`. Both subclasses are caught by that one `except`, which is why
+    they share a base at all.
+    """
+
+
+class OllamaUnreachable(LlmUnavailable):
+    """Nothing answered at Ollama's configured address.
+
+    Carries the URL it tried, because the usual cause is that Ollama is running
+    but not where settings say -- it lives natively on the host, never in
+    Compose (CLAUDE.md), so a containerised caller needs a different host than a
+    local one and the address is the first thing to check.
+
+    `detail` carries the last failure when there was one. It matters because a
+    persistent 500 reaches here too, and "Ollama is loading the model" or "out
+    of memory" is not fixed by starting a service that is already running --
+    without the detail the message would send the reader somewhere useless.
+    """
+
+    def __init__(self, base_url: str, detail: str = "") -> None:
+        self.base_url = base_url
+        self.detail = detail
+        message = f"Ollama not reachable at {base_url}. Start it with 'ollama serve'."
+        if detail:
+            message = f"Ollama at {base_url} did not serve the request ({detail}). "
+            message += "If it is not running, start it with 'ollama serve'."
+        super().__init__(message)
+
+
+class ModelNotPulled(LlmUnavailable):
+    """Ollama is running, but the model it was asked for is not downloaded.
+
+    The message names the exact `ollama pull` command rather than describing the
+    problem, because that command *is* the fix and retyping a model name is how
+    a typo survives. `detail` keeps whatever Ollama itself said, so a 404 that
+    turns out to be a wrong endpoint rather than a missing model is still
+    diagnosable from the error alone.
+    """
+
+    def __init__(self, model: str, detail: str = "") -> None:
+        self.model = model
+        self.detail = detail
+        message = f"Model {model} not found. Run: ollama pull {model}"
+        super().__init__(f"{message} ({detail})" if detail else message)

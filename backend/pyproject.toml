@@ -14,6 +14,7 @@ dependencies = [
     "ortools>=9.15.6755",
     "pgvector>=0.5.1",
     "psycopg[binary]>=3.3.6",
+    "pydantic-ai-slim[anthropic,openai]>=2",
     "pydantic-settings>=2.15.0",
     # Starlette parses multipart bodies through this; without it an UploadFile
     # route raises at import. Needed by POST /templates/import (spec 06).

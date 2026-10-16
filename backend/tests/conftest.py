@@ -34,6 +34,7 @@ from sqlalchemy.pool import NullPool
 from sqlmodel import Session
 
 from domains.strength.schemas import BlockDraft, ParsedEntry
+from planner_core import llm
 from planner_core.config import get_settings
 from tests import golden
 
@@ -60,10 +61,33 @@ _postgres_reachable: bool | None = None
 
 @pytest.fixture(autouse=True)
 def _clear_settings_cache():
-    """`get_settings` is cached, so monkeypatched env vars need the cache dropped."""
+    """`get_settings` is cached, so monkeypatched env vars need the cache dropped.
+
+    The model cache goes with it. `get_model` caches per role, so a model built
+    under one test's `LLM_PROVIDER` would otherwise be handed to the next test
+    that asks -- an order-dependent failure, and the kind that is read as
+    flakiness rather than as a missing `reset_models()` in some other file.
+    """
     get_settings.cache_clear()
+    llm.reset_models()
     yield
     get_settings.cache_clear()
+    llm.reset_models()
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _forbid_real_model_requests():
+    """No test may call a real model (CLAUDE.md).
+
+    Pydantic AI has a global switch for exactly this, and it is worth more than
+    a convention: without it, a test that forgets to override the model would
+    quietly call the developer's local Ollama, pass on their machine and fail in
+    CI -- or worse, pass in both while costing money in `anthropic` mode. With
+    it, that test raises instead.
+    """
+    import pydantic_ai.models
+
+    pydantic_ai.models.ALLOW_MODEL_REQUESTS = False
 
 
 @pytest.fixture

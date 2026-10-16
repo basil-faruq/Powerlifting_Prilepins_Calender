@@ -7,9 +7,14 @@ the same functions from Temporal activities where there is no request to fail.
 This module is the single place that knows those errors are also HTTP.
 """
 
+import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from api.routes import athletes, blocks, health, proposals, sessions, templates
 from api.schemas import ProblemOut
@@ -19,14 +24,45 @@ from planner_core.config import get_settings
 from planner_core.errors import (
     AlreadyDecided,
     BlockNotRunning,
+    LlmUnavailable,
     NotFound,
     PlanInvalid,
     ProposalStale,
 )
+from planner_core.llm import warn_missing_models
+
+logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
-app = FastAPI(title="Powerlifting Block Planner", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Say at startup what will be missing at request time.
+
+    A model that is configured but not pulled fails only the routes that need
+    it, and it fails them with a message nobody reads until they are already
+    confused. Checking once here turns that into one warning at the top of the
+    log, next to the command that fixes it.
+
+    It warns and never raises: every deterministic route -- which is most of
+    them -- works with no model present at all, so a missing model is not a
+    reason to refuse to start. The check is blocking, so it goes to a thread.
+
+    The bare `except` is deliberate rather than lazy. `warn_missing_models`
+    already handles the expected failure, so anything reaching here is a bug in
+    the probe itself -- and a bug in a *diagnostic* must not be what takes the
+    API down. It is logged with its traceback, which is the only thing that
+    would be lost by swallowing it.
+    """
+    try:
+        await run_in_threadpool(warn_missing_models)
+    except Exception:  # noqa: BLE001 - a diagnostic must not break startup
+        logger.exception("The Ollama model check failed; starting anyway.")
+    yield
+
+
+app = FastAPI(title="Powerlifting Block Planner", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -89,6 +125,17 @@ async def _already_decided(request: Request, exc: AlreadyDecided) -> JSONRespons
 @app.exception_handler(WeekdayLocked)
 async def _weekday_locked(request: Request, exc: WeekdayLocked) -> JSONResponse:
     return _problem(409, ProblemOut(detail=str(exc)))
+
+
+@app.exception_handler(LlmUnavailable)
+async def _llm_unavailable(request: Request, exc: LlmUnavailable) -> JSONResponse:
+    """503, and the message already names the command that fixes it.
+
+    Covers `OllamaUnreachable` and `ModelNotPulled` together: both mean the
+    request was fine and the machine behind it was not, which is the one case
+    where retrying the same request unchanged is the right advice.
+    """
+    return _problem(503, ProblemOut(detail=str(exc)))
 
 
 @app.exception_handler(TemplateExistsError)

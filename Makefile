@@ -5,7 +5,7 @@
 #   ollama pull qwen2.5:14b
 #   ollama pull nomic-embed-text
 
-.PHONY: help infra infra-down api migrate migrate-sql seed seed-dev-1rms calibrate import test lint format
+.PHONY: help infra infra-down api migrate migrate-sql seed seed-dev-1rms calibrate import check-llm test lint format
 
 help:
 	@echo "make infra       Postgres (pgvector) + Temporal dev server in Docker"
@@ -17,6 +17,7 @@ help:
 	@echo "make import      Import data/B1_Mine.xlsx as template B1 (pattern only)"
 	@echo "make seed-dev-1rms  SYNTHETIC 1RMs for local testing (ARGS=--clear to remove)"
 	@echo "make calibrate   Simulator gains from the OpenPowerlifting CSV (ARGS required)"
+	@echo "make check-llm   Tool-calling reliability of the configured model (target 5/5)"
 	@echo "make test        pytest"
 	@echo "make lint        ruff check + ruff format --check"
 	@echo "make format      ruff format"
@@ -62,6 +63,15 @@ seed-dev-1rms:
 #   make calibrate ARGS="--csv ../openpowerlifting.csv --squat 145 --bench 100 --deadlift 180"
 calibrate:
 	cd backend && uv run python -m scripts.calibrate_simulator $(ARGS)
+
+# Run this before building anything on the agent. Needs Ollama up and its models
+# pulled; it makes real model calls, which is the whole point -- nothing else in
+# this project does. Target is 5/5, because the agent is never allowed to compute
+# a number and so has to reach a tool for every fact it states.
+#
+#   make check-llm ARGS="--runs 10"
+check-llm:
+	cd backend && uv run python -m scripts.check_llm $(ARGS)
 
 # Imports the block's pattern only -- sets, reps and intensity. Never the
 # weights Excel computed, and never its `1RM` sheet: those maxes are examples.
