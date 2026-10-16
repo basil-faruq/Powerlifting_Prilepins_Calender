@@ -31,7 +31,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from domains.strength import enums, models, shaping_solver, simulator
 from domains.strength.calendar_solver import SolverStats
-from domains.strength.schemas import BlockDraft, LoggedLift, MeasuredOneRm, SessionChange
+from domains.strength.schemas import (
+    BlockDraft,
+    LoggedLift,
+    MeasuredOneRm,
+    NoteHit,
+    SessionChange,
+)
 from planner_core.proposal import ValidationResult, Violation
 
 # --- Athlete --------------------------------------------------------------
@@ -433,6 +439,49 @@ class ProposalEdit(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     changes: list[SessionChange] = Field(min_length=1)
+
+
+# --- Notes ----------------------------------------------------------------
+
+
+class NoteHitOut(BaseModel):
+    """One retrieved note.
+
+    `is_synthetic` is on the wire deliberately. ADR-0004 makes the flag the
+    authoritative "is this real?" and requires the UI to surface it while any
+    row has it set -- a seeded demo note must never read as something the
+    athlete wrote. Spec 12 §3's field list omits it; ADR-0007 rule 5 governs.
+
+    `distance` is cosine distance, 0 identical and 1 unrelated, exactly as
+    pgvector returned it. Nothing rescales it into a "relevance" score: the
+    explainer may only repeat numbers it was given.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str
+    noted_on: dt.date
+    lift_codes: list[str] = []
+    distance: float
+    is_synthetic: bool = False
+
+    @classmethod
+    def of(cls, hit: NoteHit) -> NoteHitOut:
+        return cls(
+            text=hit.text,
+            noted_on=hit.noted_on,
+            lift_codes=list(hit.lift_codes),
+            distance=hit.distance,
+            is_synthetic=hit.is_synthetic,
+        )
+
+
+class ReindexOut(BaseModel):
+    """How many chunks exist after a re-embed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reindexed: int
 
 
 # --- Errors ---------------------------------------------------------------

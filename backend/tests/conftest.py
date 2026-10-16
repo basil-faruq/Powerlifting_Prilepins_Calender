@@ -75,6 +75,27 @@ def _clear_settings_cache():
     llm.reset_models()
 
 
+@pytest.fixture(autouse=True)
+def _forbid_real_embeddings(monkeypatch):
+    """A test that forgets to pass an embedder must fail, not call Ollama.
+
+    `ALLOW_MODEL_REQUESTS` covers Pydantic AI, not the embedder: that is plain
+    `httpx`, so `services.log_session(..., embedder=None)` would quietly reach
+    the developer's machine and hang for up to three 30 s attempts. Patched at
+    the point of use rather than at the definition, so `api_client`'s dependency
+    override still works -- FastAPI replaces the dependency itself, and never
+    calls this.
+    """
+
+    def forbidden():
+        raise AssertionError(
+            "a test reached the real get_embedder(); pass tests.fakes.FakeEmbedder "
+            "or override the get_embedder dependency"
+        )
+
+    monkeypatch.setattr("domains.strength.services.get_embedder", forbidden)
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _forbid_real_model_requests():
     """No test may call a real model (CLAUDE.md).
@@ -111,8 +132,15 @@ def api_client(db_session: Session) -> Generator[TestClient, None, None]:
     """
     from api.main import app
     from planner_core.db import get_session
+    from planner_core.llm import get_embedder
+    from tests.fakes import FakeEmbedder
 
     app.dependency_overrides[get_session] = lambda: db_session
+    # Every route test gets the fake, not Ollama. Logging a session indexes its
+    # note (spec 12), so without this the *existing* session tests would start
+    # making HTTP calls -- passing or failing on whether a developer happens to
+    # have a model pulled.
+    app.dependency_overrides[get_embedder] = lambda: FakeEmbedder()
     try:
         yield TestClient(app, raise_server_exceptions=False)
     finally:
@@ -208,7 +236,16 @@ def _upgrade_head(url: URL) -> None:
 
 @pytest.fixture(scope="session")
 def db_engine() -> Generator[sa.Engine, None, None]:
-    """A `planner_test` database built from the migrations, dropped afterwards."""
+    """A `planner_test` database built from the migrations, dropped afterwards.
+
+    **Do not run two suites at once.** The name is fixed, and setup drops it
+    `WITH (FORCE)`, so a second `pytest` kills the first one's connections and
+    takes its database with them. The victim fails at a different, apparently
+    arbitrary test each run with `database "planner_test" does not exist … It
+    seems to have just been dropped or renamed`, which reads exactly like
+    flakiness and is not. Keying the name per process would fix it; nothing
+    needs that yet.
+    """
     admin_url, test_url = _urls()
     if not _reachable(admin_url):
         pytest.skip(

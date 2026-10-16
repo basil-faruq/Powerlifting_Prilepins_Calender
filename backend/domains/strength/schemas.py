@@ -437,3 +437,27 @@ class WeekdayChangePayload(StrengthPayload):
         if len(set(self.slots.values())) != len(self.slots):
             raise ValueError("two slots share a weekday")
         return self
+
+
+class NoteHit(BaseModel):
+    """One retrieved training note, with how far it sat from the query.
+
+    `distance` is cosine distance from pgvector: 0 is identical, 1 is
+    unrelated. Returned rather than a similarity score because it is the number
+    the database actually produced, and the explainer may only repeat numbers it
+    was given (CLAUDE.md non-negotiable 1). `pain_flags` reports 0.0, since a
+    keyword match has no distance -- it did not ask a vector anything.
+
+    `is_synthetic` travels with every hit. ADR-0004 makes the flag the
+    authoritative "is this real?" and requires every consumer to filter on it;
+    carrying it means a caller that opted *into* synthetic notes can still tell
+    the seeded ones apart, and the UI can say so.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    text: str
+    noted_on: dt.date
+    lift_codes: tuple[str, ...] = ()
+    distance: float
+    is_synthetic: bool = False

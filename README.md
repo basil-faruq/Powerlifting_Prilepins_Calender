@@ -50,6 +50,32 @@ make seed-dev-1rms ARGS="--clear"           # remove them; real rows are kept
 
 Every row it writes is marked twice — `is_synthetic = true` and `source = 'synthetic'` — and a database CHECK stops the two disagreeing. **`is_synthetic` is the authoritative "is this real?"**: filter on it, and clear these rows before trusting anything the planner says. It is deliberately not part of `make seed`.
 
+## Training notes
+
+A note typed when logging a session ("left knee felt tight at the bottom of squats") is chunked, embedded locally and stored in `note_chunk`. It is then retrievable by meaning rather than by keyword:
+
+```bash
+curl "localhost:8000/athletes/$ID/notes/search?q=how+has+my+knee+been"
+```
+
+"am I sleeping badly?" finds "slept badly again, everything was a grind" without sharing a word with it. Filters: `lift`, `since`, `k` (1–20, default 5).
+
+Two things about this are deliberate and easy to undo by mistake.
+
+**Failing to embed a note never fails the log.** The log is what the athlete did; the embedding is a convenience built on top of it. If Ollama is down the session is still saved, a warning is logged, and `POST /athletes/{id}/notes/reindex` indexes it later. That is also why there is no queue table: `session_log.note` is the source of truth, so a log with a note and no chunks *is* the backlog. Reindex deletes and rebuilds per log, so it is safe to run repeatedly.
+
+**Pain screening does not use embeddings at all.** Whether a lift is flagged as painful is decided by keyword match with negation handling — "no pain today" and "didn't hurt" do not flag anything — because a safety rule whose answer depends on a similarity threshold is a safety rule that can be argued with. It feeds the validator, which refuses to plan a painful lift heavier than it has already been trained. The keyword list, the 7-day window and the chunk sizes are **starting values, not tuned numbers**, and are labelled as such in the code.
+
+### Synthetic demo notes
+
+```bash
+make demo-notes            # ~40 synthetic notes across a block (needs Ollama)
+make demo-notes ARGS=--clear
+make demo-data             # athlete + template + these notes, in one go
+```
+
+Every row is flagged `is_synthetic`. Search **hides them** unless you pass `include_synthetic=true`, and pain screening ignores them entirely — a seeded note about a sore knee must never be able to block a real session. `make demo-data` deliberately does not seed 1RMs: a max is a measurement, and bundling an invented one into a convenience target is how it stops being obvious that it was invented.
+
 `/health` reports each dependency separately and always answers 200, so "the API is up but Postgres is gone" is distinguishable from "the API is gone":
 
 ```json
@@ -70,6 +96,8 @@ Each is a thin wrapper; the raw command is given so the Makefile is never the on
 | `make seed` | `cd backend && uv run python -m scripts.seed_athlete` |
 | `make import` | `cd backend && uv run python -m scripts.import_template ../data/B1_Mine.xlsx $(ARGS)` |
 | `make seed-dev-1rms` | `cd backend && uv run python -m scripts.seed_dev_one_rms $(ARGS)` |
+| `make demo-notes` | `cd backend && uv run python -m scripts.seed_demo_notes $(ARGS)` |
+| `make demo-data` | `seed` + `import` + `demo-notes` |
 | `make calibrate` | `cd backend && uv run python -m scripts.calibrate_simulator $(ARGS)` |
 | `make check-llm` | `cd backend && uv run python -m scripts.check_llm $(ARGS)` |
 | `make test` | `cd backend && uv run pytest` |
@@ -81,7 +109,8 @@ Each is a thin wrapper; the raw command is given so the Makefile is never the on
 ```
 backend/
   planner_core/      domain-agnostic engine — config, db, errors, proposal, llm, (later) tracing
-  domains/strength/  powerlifting plug-in — enums, models (14 SQLModel tables)
+  domains/strength/  powerlifting plug-in — enums, models, generator, validator,
+                     solvers, simulator, notes
   migrations/        Alembic; the only way the schema ever changes
   api/               FastAPI app
   scripts/           operational scripts

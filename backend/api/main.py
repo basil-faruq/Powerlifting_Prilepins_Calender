@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
-from api.routes import athletes, blocks, health, proposals, sessions, templates
+from api.routes import athletes, blocks, health, notes, proposals, sessions, templates
 from api.schemas import ProblemOut
 from domains.strength.importer import TemplateExistsError, TemplateImportError
 from domains.strength.services import WeekdayLocked
@@ -78,6 +78,7 @@ app.include_router(templates.router)
 app.include_router(blocks.router)
 app.include_router(sessions.router)
 app.include_router(proposals.router)
+app.include_router(notes.router)
 
 
 def _problem(status_code: int, problem: ProblemOut) -> JSONResponse:

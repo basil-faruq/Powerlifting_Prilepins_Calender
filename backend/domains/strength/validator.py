@@ -577,7 +577,7 @@ def _check_pain_progression(
                         rule="pain_progression",
                         message=(
                             f"{_where(lift_code, session)}: {_pct(top)} is above "
-                            f"{_pct(ceiling)}, the most recently completed intensity, and "
+                            f"{_pct(ceiling)}, the highest completed intensity, and "
                             f"{lift_code} has a pain note from the last 7 days"
                         ),
                         refs=(_ref(session),),

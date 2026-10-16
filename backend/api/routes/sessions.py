@@ -6,7 +6,7 @@ import uuid
 
 from fastapi import APIRouter, status
 
-from api.deps import SessionDep
+from api.deps import EmbedderDep, SessionDep
 from api.schemas import PlannedLiftOut, SessionDetail, SessionLogIn, SessionLogOut
 from domains.strength import services
 
@@ -36,6 +36,7 @@ def log_session(
     session_id: uuid.UUID,
     body: SessionLogIn,
     session: SessionDep,
+    embedder: EmbedderDep,
 ) -> SessionLogOut:
     """Record what happened, and bank a made test single as a new 1RM.
 
@@ -46,6 +47,10 @@ def log_session(
 
     A second log for the same session is a 409 -- `session_log` is one row per
     session, and overwriting history silently is worse than refusing.
+
+    A note on the log is indexed for retrieval, but this route still answers
+    201 if that fails: the log is the athlete's record and the embedding is
+    built on top of it. `POST /athletes/{id}/notes/reindex` catches up.
     """
     log = services.log_session(
         session,
@@ -55,6 +60,7 @@ def log_session(
         # shape for `session_log.entries`, so there is nothing to translate.
         body.entries,
         body.note,
+        embedder=embedder,
     )
     session.commit()
     session.refresh(log)

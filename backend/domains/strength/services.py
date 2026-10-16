@@ -29,15 +29,25 @@ Three conventions that hold throughout:
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
 from decimal import Decimal
+from fractions import Fraction
 from zoneinfo import ZoneInfo
 
 import sqlalchemy as sa
 from sqlmodel import Session
 
-from domains.strength import enums, generator, missed_policy, models, shaping_solver, simulator
+from domains.strength import (
+    enums,
+    generator,
+    missed_policy,
+    models,
+    notes,
+    shaping_solver,
+    simulator,
+)
 from domains.strength.schemas import (
     BlockDraft,
     BlockState,
@@ -57,7 +67,10 @@ from planner_core.errors import (
     PlanInvalid,
     ProposalStale,
 )
+from planner_core.llm import Embedder, get_embedder
 from planner_core.proposal import ValidationResult, Violation
+
+logger = logging.getLogger(__name__)
 
 # Statuses a proposal may still be acted on from. Everything else is decided.
 _OPEN = "pending"
@@ -203,9 +216,18 @@ def validation_context(
 ) -> ValidationContext:
     """Assemble what the rules measure against (ADR-0006 left this to spec 06).
 
-    `pain_lifts` and `last_done_pct` stay empty until spec 12: they come from
-    note screening, and inventing them here would mean the `pain_progression`
-    rule silently never fires rather than visibly not being wired up yet.
+    `pain_lifts` comes from deterministic keyword screening of the athlete's
+    notes over the last 7 days (spec 12), never from embedding similarity.
+    `last_done_pct` is the companion ADR-0006's "Open for spec 12" requires:
+    rule 2 blocks every future session of a painful lift that has *no*
+    baseline, so populating one without the other would make a single pain note
+    unplannable rather than capped.
+
+    Both are read across the athlete's whole logged history rather than this
+    block's, which is what makes the rule work at a block boundary. A new block
+    has nothing completed in it by definition, so a block-scoped baseline would
+    be empty exactly when a fresh pain note arrived -- and the athlete could
+    not plan their next block at all until the note aged out.
 
     `approved_off_weekday` is derived from the changes themselves: a session a
     proposal explicitly places on a date **is** an off-weekday move the human
@@ -233,6 +255,7 @@ def validation_context(
     discarding it: the override is keyword-only and reachable only from the
     shaping path.
     """
+    today = today_for(athlete)
     return ValidationContext(
         weekday_map=dict(weekday_map)
         if weekday_map is not None
@@ -246,8 +269,103 @@ def validation_context(
             change.seq for change in changes if change.action in {"move", "create"}
         }
         | set(already_moved),
-        today=today_for(athlete),
+        pain_lifts=notes.pain_lifts(session, athlete.id, today),
+        last_done_pct=last_done_pct(session, athlete.id),
+        today=today,
     )
+
+
+def last_done_pct(session: Session, athlete_id: uuid.UUID) -> dict[str, Fraction]:
+    """The highest intensity the athlete has actually completed, per lift.
+
+    ADR-0006 defines this as "the highest percentage completed so far" and uses
+    it as a ceiling: a lift with a recent pain note may not be planned above
+    what it has already done. Highest rather than most recent, because the
+    question the rule asks is "has this load been tolerated before?" -- and an
+    easy session last week is not evidence against a heavier one the month
+    before. (The `pain_progression` message read "most recently completed"; the
+    ADR governs, so the message was corrected rather than the definition. It
+    was only ever dead text before this spec, because nothing populated the
+    field it describes.)
+
+    "Completed" means the session was logged *and* the log records real work on
+    that lift. A logged attempt with zero sets is the athlete loading the bar
+    and not lifting it, which is the same reason `log_session` refuses to bank
+    it as a 1RM.
+
+    The intensity read is the one that was *prescribed*, because that is what
+    the validator compares against. What was logged is a weight, and turning a
+    weight back into a percentage needs the 1RM of the day -- a second
+    inference where this rule wants a fact.
+    """
+    rows = session.execute(
+        sa.select(
+            models.PlannedLift.lift_code,
+            models.PlannedLift.pct_num,
+            models.PlannedLift.pct_den,
+            models.PlannedLift.weight_kg,
+            models.SessionLog.entries,
+        )
+        .join(
+            models.PlannedSession,
+            models.PlannedSession.id == models.PlannedLift.session_id,
+        )
+        .join(
+            models.SessionLog,
+            models.SessionLog.planned_session_id == models.PlannedSession.id,
+        )
+        .join(models.Block, models.Block.id == models.PlannedSession.block_id)
+        .where(models.Block.athlete_id == athlete_id)
+    ).all()
+
+    out: dict[str, Fraction] = {}
+    for lift_code, pct_num, pct_den, weight_kg, entries in rows:
+        if not _logged_at_or_above(entries, lift_code, weight_kg):
+            continue
+        # Single-argument `Fraction(Decimal)`; the two-argument form raises on
+        # Decimals, and float would put binary rounding into an exact ratio.
+        pct = Fraction(Decimal(pct_num)) / Fraction(Decimal(pct_den))
+        if lift_code not in out or pct > out[lift_code]:
+            out[lift_code] = pct
+    return out
+
+
+def _logged_at_or_above(entries: object, lift_code: str, weight_kg: Decimal) -> bool:
+    """Did the log record a completed set of this lift *at the prescribed load*?
+
+    The weight matters, and leaving it out made the ceiling inflatable by a
+    **failed** attempt: a test single prescribed at 115 kg (107%) and logged at
+    90 kg credited 107%, which is above everything else in the block -- so the
+    pain rule could never fire for that lift again. The athlete missing a lift
+    is the opposite of evidence that they tolerated it.
+
+    The comparison is the same one `log_session` already makes to decide
+    whether a test single becomes a 1RM: logged kilograms against the
+    prescribed kilograms of that row, same units, no inference. An earlier
+    version of this docstring claimed the logged weight could not be used
+    without knowing the 1RM of the day; that was simply wrong.
+    """
+    if not isinstance(entries, list):
+        return False
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("lift_code") != lift_code:
+            continue
+        try:
+            if int(entry.get("sets_done", 0)) < 1:
+                continue
+            reps = entry.get("reps_done")
+            if isinstance(reps, list | tuple):
+                if not any(int(count) >= 1 for count in reps):
+                    continue
+            elif int(reps or 0) < 1:
+                continue
+            # Strings in JSONB, exactly as `log_session` wrote them, so this
+            # stays Decimal arithmetic rather than float.
+            if Decimal(str(entry.get("weight_kg", 0))) >= Decimal(weight_kg):
+                return True
+        except (TypeError, ValueError, ArithmeticError):
+            continue
+    return False
 
 
 # --- Creating a block proposal --------------------------------------------
@@ -1212,6 +1330,7 @@ def log_session(
     performed_on: dt.date,
     entries: Sequence[LoggedLift],
     note: str | None = None,
+    embedder: Embedder | None = None,
 ) -> models.SessionLog:
     """Record what happened, and bank a made test single as a new 1RM.
 
@@ -1223,6 +1342,14 @@ def log_session(
 
     `source = "tested"` and `is_synthetic` left false: this is the one path by
     which a real, athlete-measured max enters the database through the API.
+
+    A note is indexed for retrieval afterwards, and **failing to index it never
+    fails the log**. The log is what the athlete did; the embedding is a
+    convenience built on top of it. Ollama being down, or a model returning the
+    wrong width, must not be able to lose a training record -- so the note stays
+    in `session_log.note` and `POST /athletes/{id}/notes/reindex` picks it up
+    later. That is also why no queue table exists: a log with a note and no
+    chunks is the backlog.
     """
     planned = get_session_row(session, session_id)
     if log_of(session, session_id) is not None:
@@ -1265,7 +1392,40 @@ def log_session(
             )
         )
     session.flush()
+    _index_note(session, log, embedder)
     return log
+
+
+def _index_note(session: Session, log: models.SessionLog, embedder: Embedder | None) -> None:
+    """Index the log's note, or log a warning and leave it for `reindex`.
+
+    Wrapped in a savepoint so a failure part-way cannot poison the transaction
+    the caller is about to commit: the log, the status change and any banked
+    1RM all have to survive this.
+
+    The `except` is deliberately everything, which needs justifying. The
+    invariant being protected is "a training record is never lost to indexing
+    it", and that is a statement about *all* failures, not about the three or
+    four that were anticipated. Naming a tuple -- `LlmUnavailable`, `ValueError`
+    for a malformed or wrong-width response (ADR-0013), `httpx.HTTPError` --
+    read as the full set and was not: a wrong-width vector from an `Embedder`
+    that does not self-check (the protocol does not require it) reaches the
+    database and raises a SQLAlchemy error, which escaped and took the log with
+    it. The savepoint is what makes the broad catch safe, and the traceback is
+    logged rather than swallowed, so a real bug here is still visible.
+    """
+    if not log.note or not log.note.strip():
+        return
+    try:
+        with session.begin_nested():
+            notes.index_log_note(session, log, embedder or get_embedder())
+    except Exception:  # noqa: BLE001 - see the docstring; the log must survive
+        logger.warning(
+            "Could not embed the note on session %s. "
+            "The log is saved; run POST /athletes/{id}/notes/reindex to index it.",
+            log.planned_session_id,
+            exc_info=True,
+        )
 
 
 def _completed(entry: LoggedLift) -> bool:
