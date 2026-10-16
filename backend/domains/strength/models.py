@@ -110,19 +110,23 @@ class Athlete(TimestampMixin, table=True):
 
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     name: str = Field(sa_type=sa.Text, nullable=False)
-    # 1.00 matches the authored spreadsheet's 1 kg floor. CONTEXT.md §9 records
-    # 2.5 kg plate reality as an open question; this is a starting value.
+    # 5.00 is what a loaded bar can actually take: plates go on in pairs, and
+    # the gym's smallest is 2.5 kg, so the total moves in 5 kg steps (migration
+    # 0005 closes CONTEXT.md §9). The workbook's own 1.00 / 'floor' is still a
+    # per-athlete setting -- the golden test uses it -- just no longer default.
     plate_increment_kg: Decimal = Field(
-        default=Decimal("1.00"),
+        default=Decimal("5.00"),
         max_digits=4,
         decimal_places=2,
-        sa_column_kwargs={"server_default": sa.text("1.00")},
+        sa_column_kwargs={"server_default": sa.text("5.00")},
         nullable=False,
     )
+    # 'nearest' because a 5 kg step is coarse enough that always flooring
+    # drifts noticeably under the percentage the template prescribed.
     rounding: enums.Rounding = Field(
-        default="floor",
+        default="nearest",
         sa_type=sa.Text,
-        sa_column_kwargs={"server_default": sa.text("'floor'")},
+        sa_column_kwargs={"server_default": sa.text("'nearest'")},
         nullable=False,
     )
     timezone: str = Field(
@@ -591,6 +595,12 @@ class Proposal(TimestampMixin, table=True):
     )
     source: enums.ProposalSource = Field(sa_type=sa.Text, nullable=False)
     decided_at: dt.datetime | None = Field(default=None, nullable=True)
+    # Why the *human* decided as they did, which is not what `reasons` holds:
+    # that is why the solver proposed. Added in 0004 for spec 06's
+    # `POST /proposals/{id}/reject {reason?}`, which otherwise had nowhere to
+    # put its only argument. Null on an approval, and on a reject with no
+    # reason given.
+    decision_reason: str | None = Field(default=None, sa_type=sa.Text, nullable=True)
 
 
 # --- M. decision ----------------------------------------------------------

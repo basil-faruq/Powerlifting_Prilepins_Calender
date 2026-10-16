@@ -38,9 +38,9 @@ Nothing else in the router, tools or tests changes when you flip the variable.
 | `ollama` | `ollama_chat_model` (`qwen2.5:14b`) | `ollama_router_model` |
 | `anthropic` | `anthropic_model` (Sonnet) | `anthropic_router_model` (Haiku) |
 
-- Ollama: Pydantic AI's OpenAI-compatible chat model pointed at `{ollama_base_url}/v1` (use the `OllamaProvider` if the installed Pydantic AI version has it, otherwise `OpenAIProvider(base_url=…)`; check the installed version's docs for exact class names)
-- Anthropic: Pydantic AI's Anthropic model with the key from settings
-- Cached per role
+- Ollama: `OllamaModel(name, provider=OllamaProvider(base_url=f"{ollama_base_url}/v1"))` — resolved against the installed Pydantic AI **v2.56** (`pydantic_ai.models.ollama`), which has a dedicated `OllamaModel` subclassing `OpenAIChatModel`. The `/v1` suffix is required: it is Ollama's OpenAI-compatible surface, while `/api` is its own REST API (what the embedder and `/api/tags` use)
+- Anthropic: `AnthropicModel(name, provider=AnthropicProvider(api_key=…))` with the key from settings
+- Cached per role, by hand rather than with `functools.cache`, so `reset_models()` can clear it alongside the settings cache in tests
 
 ---
 
@@ -49,11 +49,13 @@ Nothing else in the router, tools or tests changes when you flip the variable.
 - `embed_documents(texts: list[str]) -> list[list[float]]`
 - `embed_query(text: str) -> list[float]`
 - Calls Ollama `POST {ollama_base_url}/api/embed` with `{"model": ollama_embed_model, "input": [...], "options": {"num_ctx": 8192}}`
+- `num_ctx` is sent explicitly because Ollama's own default for this model is 2048 and `truncate` defaults to true, so a long note would otherwise embed as its first half with no error
 - `nomic-embed-text` needs task prefixes:
     - documents: `"search_document: " + text`
     - queries: `"search_query: " + text`
-- Asserts every vector has length `settings.embed_dim` (768)
-- Batches of 32; `httpx` with 30 s timeout and 2 retries
+- Parses the response body as a Pydantic model (`EmbedResponse.embeddings: list[list[float]]`) **and then** asserts every vector has length `settings.embed_dim` (768). The length assertion alone is not sufficient and was the spec's original wording: `[[None] * 768]` and a 768-character string both have the right length, and both would be stored as "vectors"
+- Batches of 32; `httpx` with 30 s timeout and 2 retries. `/api/tags` uses its own shorter 5 s timeout, because it is probed at startup
+- Validates its own construction: `retries >= 0`, `dim >= 1`
 
 ---
 
@@ -63,10 +65,12 @@ Nothing else in the router, tools or tests changes when you flip the variable.
 
 ---
 
-### D. `check_ollama_models() -> list[str]`
+### D. `check_ollama_models(client=None) -> list[str]`
 
 - `GET /api/tags`; returns the configured models that are **not** pulled
-- Called at API startup when `LLM_PROVIDER=ollama`: logs a warning such as `Model qwen2.5:14b not found. Run: ollama pull qwen2.5:14b`
+- Tag names are normalised before comparison: Ollama always reports an explicit tag, so a setting written as `nomic-embed-text` has to be matched against `nomic-embed-text:latest` or a pulled model reads as missing
+- Raises `OllamaUnreachable` when Ollama cannot be asked at all — distinct from a missing model, about which nothing can then be concluded
+- `warn_missing_models()` wraps it for startup when `LLM_PROVIDER=ollama`: logs a warning such as `Model qwen2.5:14b not found. Run: ollama pull qwen2.5:14b`, and never raises
 
 ---
 
@@ -75,6 +79,8 @@ Nothing else in the router, tools or tests changes when you flip the variable.
 - Defines a toy tool `get_weather(city: str)` and asks 5 different prompts that need it
 - Prints the tool-call success rate for the configured agent model, plus one embedding round-trip
 - **Target: 5/5.** Below that, try a larger model before building the router on it
+- Checks `check_ollama_models()` **first** and exits 2 if anything is unpulled: measuring anyway would score a missing model 0/5 and send the reader to install a bigger one to fix a download that never happened
+- Exit codes: 0 all passed, 1 below target or a dimension mismatch, 2 nothing could be measured
 
 ---
 
@@ -86,8 +92,9 @@ Nothing else in the router, tools or tests changes when you flip the variable.
 
 ## 7. Files to Change
 
-- `api/main.py`, `.env.example`
+- `api/main.py` (lifespan + the 503 handler), `planner_core/errors.py` (`LlmUnavailable`, `OllamaUnreachable`, `ModelNotPulled`), `README.md`
 - `Makefile` → add `check-llm` (`uv run python -m scripts.check_llm`)
+- **Not** `.env.example`: it is gitignored (`.gitignore` line 3) so it cannot be committed, and spec 11 adds no new settings — every field it needs already exists in `config.py` from spec 01
 
 ---
 
@@ -96,12 +103,13 @@ Nothing else in the router, tools or tests changes when you flip the variable.
 - `backend/planner_core/llm.py`
 - `backend/scripts/check_llm.py`
 - `backend/tests/test_llm.py`
+- `backend/tests/fakes.py` — the deterministic `FakeEmbedder` spec 12's retrieval tests need; it belongs with the embedder it stands in for
 
 ---
 
 ## 9. Dependencies
 
-- `pydantic-ai-slim[openai,anthropic]`
+- `pydantic-ai-slim[openai,anthropic]>=2` (installed: 2.56.0, which also brings `httpx2` alongside the existing `httpx`)
 
 ---
 
@@ -139,9 +147,11 @@ Nothing else in the router, tools or tests changes when you flip the variable.
 
 ## 13. Error Handling Expectations
 
-- Ollama not running → clear error: `Ollama not reachable at http://localhost:11434. Start it with 'ollama serve'.`
-- Model not pulled → error naming the `ollama pull` command
+- Ollama not running → `OllamaUnreachable`: `Ollama not reachable at http://localhost:11434. Start it with 'ollama serve'.`
+- Model not pulled → `ModelNotPulled`, naming the `ollama pull` command
 - Wrong embedding length → `ValueError` naming the model and expected dim
+- Both exceptions share a `LlmUnavailable` base so spec 12 can keep a training log with one `except`, and the API maps that base to **503** — the request was well formed and the machine behind it was not
+- A 5xx or a dropped connection is retried twice; a 404 is not, because a model does not download while we wait
 
 ---
 

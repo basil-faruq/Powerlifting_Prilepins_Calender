@@ -5,7 +5,7 @@
 #   ollama pull qwen2.5:14b
 #   ollama pull nomic-embed-text
 
-.PHONY: help infra infra-down api migrate migrate-sql seed seed-dev-1rms import test lint format
+.PHONY: help infra infra-down api migrate migrate-sql seed seed-dev-1rms demo-notes demo-data calibrate import check-llm test lint format
 
 help:
 	@echo "make infra       Postgres (pgvector) + Temporal dev server in Docker"
@@ -16,6 +16,10 @@ help:
 	@echo "make seed        Create the athlete (1RMs are entered in the app)"
 	@echo "make import      Import data/B1_Mine.xlsx as template B1 (pattern only)"
 	@echo "make seed-dev-1rms  SYNTHETIC 1RMs for local testing (ARGS=--clear to remove)"
+	@echo "make demo-notes  SYNTHETIC training notes for retrieval (ARGS=--clear to remove)"
+	@echo "make demo-data   Athlete + template + synthetic notes, in one go"
+	@echo "make calibrate   Simulator gains from the OpenPowerlifting CSV (ARGS required)"
+	@echo "make check-llm   Tool-calling reliability of the configured model (target 5/5)"
 	@echo "make test        pytest"
 	@echo "make lint        ruff check + ruff format --check"
 	@echo "make format      ruff format"
@@ -53,6 +57,37 @@ seed:
 #   make seed-dev-1rms ARGS="--clear"           remove them; real rows kept
 seed-dev-1rms:
 	cd backend && uv run python -m scripts.seed_dev_one_rms $(ARGS)
+
+# SYNTHETIC notes, so retrieval can be demonstrated on a fresh database. Needs
+# Ollama running, because each note is embedded as it is written. Search hides
+# these unless asked for them, and pain screening ignores them entirely.
+#
+#   make demo-notes ARGS=--clear
+demo-notes:
+	cd backend && uv run python -m scripts.seed_demo_notes $(ARGS)
+
+# Everything a demo needs except the 1RMs, which are the athlete's to enter.
+# `seed-dev-1rms` is deliberately NOT part of this: a max is a measurement, and
+# bundling an invented one into a convenience target is how it stops being
+# obvious that it was invented (CLAUDE.md non-negotiable 9).
+demo-data: seed import demo-notes
+
+# Simulator gains (spec 10). The maxes are required arguments and are never read
+# from the database, so a synthetic-seeded one cannot calibrate against invented
+# numbers. The CSV (~1 GB, https://openpowerlifting.org/data) is never committed.
+#
+#   make calibrate ARGS="--csv ../openpowerlifting.csv --squat 145 --bench 100 --deadlift 180"
+calibrate:
+	cd backend && uv run python -m scripts.calibrate_simulator $(ARGS)
+
+# Run this before building anything on the agent. Needs Ollama up and its models
+# pulled; it makes real model calls, which is the whole point -- nothing else in
+# this project does. Target is 5/5, because the agent is never allowed to compute
+# a number and so has to reach a tool for every fact it states.
+#
+#   make check-llm ARGS="--runs 10"
+check-llm:
+	cd backend && uv run python -m scripts.check_llm $(ARGS)
 
 # Imports the block's pattern only -- sets, reps and intensity. Never the
 # weights Excel computed, and never its `1RM` sheet: those maxes are examples.

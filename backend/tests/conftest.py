@@ -20,6 +20,7 @@ actually ships — unexercised.
 from __future__ import annotations
 
 from collections.abc import Generator
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -32,7 +33,10 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.pool import NullPool
 from sqlmodel import Session
 
+from domains.strength.schemas import BlockDraft, ParsedEntry
+from planner_core import llm
 from planner_core.config import get_settings
+from tests import golden
 
 TEST_DB_NAME = "planner_test"
 # `CREATE DATABASE` cannot run from inside the database being created, so the
@@ -57,10 +61,54 @@ _postgres_reachable: bool | None = None
 
 @pytest.fixture(autouse=True)
 def _clear_settings_cache():
-    """`get_settings` is cached, so monkeypatched env vars need the cache dropped."""
+    """`get_settings` is cached, so monkeypatched env vars need the cache dropped.
+
+    The model cache goes with it. `get_model` caches per role, so a model built
+    under one test's `LLM_PROVIDER` would otherwise be handed to the next test
+    that asks -- an order-dependent failure, and the kind that is read as
+    flakiness rather than as a missing `reset_models()` in some other file.
+    """
     get_settings.cache_clear()
+    llm.reset_models()
     yield
     get_settings.cache_clear()
+    llm.reset_models()
+
+
+@pytest.fixture(autouse=True)
+def _forbid_real_embeddings(monkeypatch):
+    """A test that forgets to pass an embedder must fail, not call Ollama.
+
+    `ALLOW_MODEL_REQUESTS` covers Pydantic AI, not the embedder: that is plain
+    `httpx`, so `services.log_session(..., embedder=None)` would quietly reach
+    the developer's machine and hang for up to three 30 s attempts. Patched at
+    the point of use rather than at the definition, so `api_client`'s dependency
+    override still works -- FastAPI replaces the dependency itself, and never
+    calls this.
+    """
+
+    def forbidden():
+        raise AssertionError(
+            "a test reached the real get_embedder(); pass tests.fakes.FakeEmbedder "
+            "or override the get_embedder dependency"
+        )
+
+    monkeypatch.setattr("domains.strength.services.get_embedder", forbidden)
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _forbid_real_model_requests():
+    """No test may call a real model (CLAUDE.md).
+
+    Pydantic AI has a global switch for exactly this, and it is worth more than
+    a convention: without it, a test that forgets to override the model would
+    quietly call the developer's local Ollama, pass on their machine and fail in
+    CI -- or worse, pass in both while costing money in `anthropic` mode. With
+    it, that test raises instead.
+    """
+    import pydantic_ai.models
+
+    pydantic_ai.models.ALLOW_MODEL_REQUESTS = False
 
 
 @pytest.fixture
@@ -68,6 +116,61 @@ def client() -> TestClient:
     from api.main import app
 
     return TestClient(app)
+
+
+@pytest.fixture
+def api_client(db_session: Session) -> Generator[TestClient, None, None]:
+    """A client whose routes run against `db_session`, and roll back with it.
+
+    The dependency override is what ADR-0002 modification 16 deferred to spec
+    06: `api.main` builds its engine from `DATABASE_URL` at import, so without
+    this a route test would write to the developer's real `planner` database.
+
+    `raise_server_exceptions=False` so a test can assert on the status an
+    exception *handler* produced rather than having the exception re-raised
+    into the test -- which is the only way to check spec 06 §13's codes.
+    """
+    from api.main import app
+    from planner_core.db import get_session
+    from planner_core.llm import get_embedder
+    from tests.fakes import FakeEmbedder
+
+    app.dependency_overrides[get_session] = lambda: db_session
+    # Every route test gets the fake, not Ollama. Logging a session indexes its
+    # note (spec 12), so without this the *existing* session tests would start
+    # making HTTP calls -- passing or failing on whether a developer happens to
+    # have a model pulled.
+    app.dependency_overrides[get_embedder] = lambda: FakeEmbedder()
+    try:
+        yield TestClient(app, raise_server_exceptions=False)
+    finally:
+        app.dependency_overrides.clear()
+
+
+# --- The golden block -----------------------------------------------------
+# Shared by the generator suite (which proves the 77 weights) and the validator
+# suite (which proves the author's own plan is accepted, CLAUDE.md #5). Built
+# from the committed fixture, so neither skips without the workbook.
+
+
+@pytest.fixture(scope="session")
+def golden_rows() -> list[dict]:
+    return golden.load_rows()
+
+
+@pytest.fixture(scope="session")
+def golden_entries(golden_rows) -> tuple[ParsedEntry, ...]:
+    return golden.entries_from(golden_rows)
+
+
+@pytest.fixture(scope="session")
+def golden_maxes(golden_rows) -> dict[str, Decimal]:
+    return golden.maxes_from(golden_rows)
+
+
+@pytest.fixture(scope="session")
+def golden_draft(golden_entries, golden_maxes) -> BlockDraft:
+    return golden.draft_from(golden_entries, golden_maxes)
 
 
 @pytest.fixture(scope="session")
@@ -133,7 +236,16 @@ def _upgrade_head(url: URL) -> None:
 
 @pytest.fixture(scope="session")
 def db_engine() -> Generator[sa.Engine, None, None]:
-    """A `planner_test` database built from the migrations, dropped afterwards."""
+    """A `planner_test` database built from the migrations, dropped afterwards.
+
+    **Do not run two suites at once.** The name is fixed, and setup drops it
+    `WITH (FORCE)`, so a second `pytest` kills the first one's connections and
+    takes its database with them. The victim fails at a different, apparently
+    arbitrary test each run with `database "planner_test" does not exist … It
+    seems to have just been dropped or renamed`, which reads exactly like
+    flakiness and is not. Keying the name per process would fix it; nothing
+    needs that yet.
+    """
     admin_url, test_url = _urls()
     if not _reachable(admin_url):
         pytest.skip(
@@ -186,7 +298,12 @@ def db_session(db_engine: sa.Engine) -> Generator[Session, None, None]:
     connection = db_engine.connect()
     transaction = connection.begin()
     try:
-        with Session(bind=connection) as session:
+        # `create_savepoint` so a `session.commit()` *inside* the code under
+        # test releases a savepoint instead of committing this outer
+        # transaction. Spec 06's routes commit (the services only flush), and
+        # without this the first API test would leave its athlete behind for
+        # every later test to trip over.
+        with Session(bind=connection, join_transaction_mode="create_savepoint") as session:
             yield session
     finally:
         # A test that provoked an IntegrityError has already had its

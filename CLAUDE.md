@@ -107,6 +107,7 @@ Use `/ship-feature` to commit, push, open a PR, squash-merge and clean up. It ve
 - Never commit `data/B1_Mine.xlsx` file.
 - Never commit computed weights into the template — only sets, reps and the % fraction.
 - Never commit anything related to ADR plugins and generated ADRs in `docs/adr/`.
+- Use subagents for any exploration or research. If a task need 3+ files or multi-file analysis, spawn a subagent and return only summarized insights. You can use explorer-subagent in `.claude/agents/explorer-subagent.md` to explore codebase and use adr-explorer in `.claude/agents/adr-explorer.md` to understand context from `docs/adr/*`and `.claude/specs/<spec_name>`. For research we have `.claude/agents/research-analyst.md` subagent. Use `.claude/agents/code-reviewer.md` to analyze or review codebase for quality assurance.`
 - After implementation of a spec from `.claude/specs/`, always create a new ADR document with date and time, specifying whether the spec was accepted as it is, or whether some modification was done to original work. Always point out the modification.
 - Do not hand-edit `data/B1_Mine.xlsx`. Its two known errors are worked around in code and documented in spec 03.
 - Do not add authentication, multi-user support or a second athlete. Single-athlete is a recorded decision, not an oversight.

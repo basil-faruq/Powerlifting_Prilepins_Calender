@@ -118,6 +118,17 @@ def estimate_1rm(weight_kg: Decimal, reps: int) -> Decimal:
     return _quantize(Fraction(weight_kg) * Fraction(_NUMERATOR, _LIMIT - reps), KG_PLACES)
 
 
+def quantize_kg(value: Fraction | Decimal) -> Decimal:
+    """A kilogram figure at `one_rep_max.kg`'s two places, half-up.
+
+    Public because spec 08's restart scales a max by a factor and has to land
+    it on the same grid `estimate_1rm` and `round_weight` land on. A second
+    quantization rule would show up as a restart whose snapshot disagrees in
+    the last cent with the number it was derived from.
+    """
+    return _quantize(Fraction(value), KG_PLACES)
+
+
 def _quantize(value: Fraction, places: Decimal) -> Decimal:
     """An exact `Fraction` rendered as a `Decimal`, half-up, at `places`.
 

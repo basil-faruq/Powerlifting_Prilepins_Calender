@@ -7,10 +7,20 @@ dependencies = [
     "alembic>=1.20.0",
     "fastapi>=0.143.0",
     "httpx>=0.28.1",
+    # Was only transitive (via ortools); the simulator samples and takes
+    # percentiles with it directly (spec 10), so it is declared.
+    "numpy>=2.0",
     "openpyxl>=3.1.5",
+    "ortools>=9.15.6755",
     "pgvector>=0.5.1",
     "psycopg[binary]>=3.3.6",
+    "pydantic-ai-slim[anthropic,openai]>=2",
     "pydantic-settings>=2.15.0",
+    # Starlette parses multipart bodies through this; without it an UploadFile
+    # route raises at import. Needed by POST /templates/import (spec 06).
+    "python-multipart>=0.0.20",
+    # Discrete-event engine behind the Monte-Carlo simulator (spec 10).
+    "simpy>=4.1",
     "sqlmodel>=0.0.48",
     "uvicorn[standard]>=0.54.0",
 ]
@@ -35,9 +45,15 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.ruff.lint.per-file-ignores]
 # Pytest fixtures shadow their own names by design.
 "tests/*" = ["B008"]
+# `Query(...)` and `File(...)` in a default *is* the FastAPI idiom: the call is
+# how a parameter is described to OpenAPI, and it is evaluated once at import,
+# which is the mutable-default trap B008 exists to catch and this is not.
+"api/routes/*" = ["B008"]
 
 [dependency-groups]
 dev = [
+    # Streams the OpenPowerlifting CSV in scripts/calibrate_simulator.py only.
+    "polars>=1.0",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "ruff>=0.17.0",

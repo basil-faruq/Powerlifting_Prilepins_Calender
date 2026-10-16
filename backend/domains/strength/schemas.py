@@ -24,7 +24,7 @@ from decimal import Decimal
 from fractions import Fraction
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from domains.strength import enums
 
@@ -197,6 +197,27 @@ class NewOneRm(BaseModel):
     set_on: dt.date | None = None
 
 
+class MeasuredOneRm(BaseModel):
+    """A max the athlete reports, with the day they measured it.
+
+    Spec 06's `PUT /athletes/{id}/one-rep-maxes` writes these. Distinct from
+    `NewOneRm`, which is what a max *becomes* after a block and may mean
+    "unchanged": this one is always a measurement, so `set_on` is required and
+    `source` cannot be absent.
+
+    `synthetic` is not in `source` and there is no `is_synthetic` field. Only
+    `scripts/seed_dev_one_rms.py` may write either (ADR-0004 rule 3), so the
+    type nothing else can express it is the enforcement.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    lift_code: enums.LiftCode
+    kg: Decimal = Field(gt=0)
+    set_on: dt.date
+    source: Literal["tested", "estimated", "imported"] = "tested"
+
+
 # --- Spec 04: what actually happened, as the generator wants to read it ---
 #
 # `models.SessionLog.entries` is JSONB documented as
@@ -230,3 +251,213 @@ class LoggedSession(BaseModel):
     seq: int = Field(ge=1)
     performed_on: dt.date
     entries: tuple[LoggedLift, ...] = ()
+
+
+# --- Spec 08: a running block, as the policy needs to read it -------------
+
+
+class BlockState(BaseModel):
+    """Everything spec 08 needs to know about a block that is already running.
+
+    A `BlockDraft` describes a block that has not happened yet; this describes
+    one partway through, where some sessions are `done`, some were logged and
+    some are still ahead. The two stay separate rather than one gaining
+    optional fields, because every rule the policy applies turns on that
+    difference.
+
+    `plan` is deliberately `DraftSession`, not the rows: the calendar solver,
+    the validator and the generator all speak that type already, so the policy
+    needs no adapter and a plan read from the database is judged by exactly
+    the same code as one that was just generated. `services.load_block_state`
+    builds it through `generator.draft_session_of`.
+
+    Nothing here is persisted. It is assembled per call and thrown away.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    block_id: uuid.UUID
+    athlete_id: uuid.UUID
+    template_id: uuid.UUID
+    status: enums.BlockStatus
+    # The block's own Monday. The week grid is derived from it rather than from
+    # the session dates, which a previous reschedule may already have moved.
+    start_date: dt.date
+    template_weeks: int = Field(ge=1)
+    lifts: tuple[enums.LiftCode, ...] = Field(min_length=1)
+    one_rm_snapshot: dict[str, Decimal]
+    weekday_map: dict[int, int]
+    plan: tuple[DraftSession, ...] = Field(min_length=1)
+    status_of: dict[int, enums.PlannedSessionStatus]
+    logs: tuple[LoggedSession, ...] = ()
+
+    @model_validator(mode="after")
+    def _seqs_line_up(self) -> BlockState:
+        """The three seq-keyed collections must describe the same sessions.
+
+        Caught here rather than in the policy because every one of these is a
+        loader bug, not a planning decision, and a policy that silently plans
+        around a missing session is worse than one that refuses to start.
+        """
+        seqs = [block_session.seq for block_session in self.plan]
+        if len(set(seqs)) != len(seqs):
+            raise ValueError("two sessions share a seq")
+        if seqs != sorted(seqs):
+            raise ValueError("plan is not in seq order")
+        if set(self.status_of) != set(seqs):
+            raise ValueError("status_of does not cover exactly the planned seqs")
+        unknown = sorted({log.seq for log in self.logs} - set(seqs))
+        if unknown:
+            raise ValueError(f"logs name sessions not in the plan: {unknown}")
+        return self
+
+    @property
+    def by_seq(self) -> dict[int, DraftSession]:
+        return {block_session.seq: block_session for block_session in self.plan}
+
+    @property
+    def history_seqs(self) -> frozenset[int]:
+        """Seqs a proposal may not re-date, which the solver pins.
+
+        `missed` is terminal: a session the athlete has written off stays where
+        it was, as a record that the week went that way. A session they *intend*
+        to make up is still `planned` with a date in the past, and so is not
+        here -- which is exactly what lets the solver re-place it.
+        """
+        return frozenset(
+            seq for seq, status in self.status_of.items() if status in enums.HISTORY_STATUSES
+        )
+
+    def week_end(self, week: int) -> dt.date:
+        """The Sunday that closes a training week, counted from `start_date`."""
+        return self.start_date + dt.timedelta(days=7 * week - 1)
+
+
+# --- Spec 05: what a proposal about this domain carries -------------------
+#
+# `planner_core.Proposal` is generic in its payload; `StrengthPayload` is this
+# domain's. It travels into `proposal.payload` (JSONB), so every field has to
+# survive a JSON round-trip -- which is why the weights are `Decimal` and
+# serialise as strings, never as floats.
+
+
+class SessionChange(BaseModel):
+    """One requested change to one session.
+
+    Note the vocabulary is deliberately *not* `enums.PlannedSessionStatus`:
+    that describes what a session currently is, this describes what is being
+    asked of it. `repeat_week` is a change to the week this session belongs to
+    and carries no dates of its own -- the resulting dates are in `plan`.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    seq: int = Field(ge=1)
+    week: int = Field(ge=1)
+    slot: int = Field(ge=1)
+    action: Literal["create", "move", "skip", "repeat_week", "fold"]
+    from_date: dt.date | None = None
+    to_date: dt.date | None = None
+    # `fold` only: the seq that takes this session's lifts on. The folded
+    # session is itself skipped, so the pair is read together -- see
+    # `missed_policy` for why folding needs a target at all.
+    into_seq: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def _dates_match_the_action(self) -> SessionChange:
+        """A change that places a session must say where.
+
+        The validator's `past_date` rule reads `to_date`, so a `move` with none
+        would silently pass the one check that protects against scheduling into
+        the past.
+        """
+        if self.action in {"create", "move"} and self.to_date is None:
+            raise ValueError(f"a {self.action} needs a to_date")
+        if self.action == "move" and self.from_date is None:
+            raise ValueError("a move needs a from_date")
+        if self.action == "fold" and self.into_seq is None:
+            raise ValueError("a fold needs an into_seq")
+        if self.action != "fold" and self.into_seq is not None:
+            raise ValueError(f"a {self.action} may not carry an into_seq")
+        if self.action == "fold" and self.into_seq == self.seq:
+            raise ValueError("a session cannot be folded into itself")
+        return self
+
+
+class StrengthPayload(BaseModel):
+    """A proposed change to a block: the diff, and the whole resulting schedule.
+
+    `plan` is the **full** resulting schedule rather than just the sessions that
+    moved (spec 05 §5B), so the validator always judges the whole picture. A
+    diff cannot show that moving week 4's squat put it a day after week 3's.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    changes: tuple[SessionChange, ...] = ()
+    plan: tuple[DraftSession, ...] = ()
+    # Set only by a rollover proposal (spec 15's `finish_block`), where the
+    # maxes the next block is computed from are themselves part of the change.
+    new_one_rms: dict[str, Decimal] | None = None
+    # Set only by spec 08's `restart`, which proposes a *new* block to replace
+    # one that is still running. Naming the block explicitly beats "abandon
+    # whatever else is active": a restart proposed on Monday and approved on
+    # Friday must retire the block it was actually computed against, not
+    # whichever one happens to be running by then.
+    supersedes_block_id: uuid.UUID | None = None
+
+
+class WeekdayChangePayload(StrengthPayload):
+    """A `weekday_change` proposal: new training days, and the plan they imply.
+
+    `ProposalKind` has carried `weekday_change` since spec 05, but no spec gave
+    it a payload -- spec 06 §11 only says a weekday change while a block is
+    running must go through one. It needs exactly one field more than a
+    reschedule: the map to install, because the sessions alone cannot say which
+    weekday Day 2 now *means* once they have all moved.
+
+    Inherits the plan and the diff, so `validate` and `_apply_plan` treat it
+    like any other change to the schedule.
+    """
+
+    # {slot: weekday}, 0 = Monday. Replaces the athlete's map wholesale rather
+    # than patching it: a partial map cannot express swapping two days.
+    slots: dict[int, int]
+
+    @model_validator(mode="after")
+    def _slots_are_distinct_weekdays(self) -> WeekdayChangePayload:
+        """Mirrors `uq_weekday_map_athlete_id_weekday`, before the database does.
+
+        An IntegrityError would abort the whole approving transaction (ADR-0002
+        rule 1), taking the re-dated schedule with it.
+        """
+        for weekday in self.slots.values():
+            if not 0 <= weekday <= 6:
+                raise ValueError(f"weekday {weekday} is not in 0-6 (0 = Monday)")
+        if len(set(self.slots.values())) != len(self.slots):
+            raise ValueError("two slots share a weekday")
+        return self
+
+
+class NoteHit(BaseModel):
+    """One retrieved training note, with how far it sat from the query.
+
+    `distance` is cosine distance from pgvector: 0 is identical, 1 is
+    unrelated. Returned rather than a similarity score because it is the number
+    the database actually produced, and the explainer may only repeat numbers it
+    was given (CLAUDE.md non-negotiable 1). `pain_flags` reports 0.0, since a
+    keyword match has no distance -- it did not ask a vector anything.
+
+    `is_synthetic` travels with every hit. ADR-0004 makes the flag the
+    authoritative "is this real?" and requires every consumer to filter on it;
+    carrying it means a caller that opted *into* synthetic notes can still tell
+    the seeded ones apart, and the UI can say so.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    text: str
+    noted_on: dt.date
+    lift_codes: tuple[str, ...] = ()
+    distance: float
+    is_synthetic: bool = False

@@ -26,7 +26,12 @@ from planner_core.config import get_settings
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # `disable_existing_loggers=False` because the default is True, and this
+    # module is imported *in process* -- by `make migrate` and by the test
+    # fixtures that migrate `planner_test`. With the default, every logger
+    # already created is switched off for the rest of the process, so the
+    # calendar solver silently stops reporting the options it dropped.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # Importing `models` registers all 14 tables on this metadata. `--autogenerate`
 # and the drift test in tests/test_models.py both compare against it.
