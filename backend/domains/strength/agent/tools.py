@@ -202,10 +202,15 @@ def missed_seqs(state, today: dt.date) -> tuple[int, ...]:
     )
 
 
-def _resolve_seqs(
+def resolve_seqs(
     state, missed_dates: Sequence[dt.date], unavailable_from: dt.date, window_end: dt.date
 ) -> tuple[int, ...]:
     """Which planned sessions the athlete is telling us they missed.
+
+    Public alongside `missed_seqs`, and the pair is a genuine either/or: this
+    one answers "what falls inside the window the athlete named", which is
+    the only sensible question when the window is still ahead of them. Spec
+    15's workflow needs both, for the same reason the chat tool does.
 
     `MissedEvent` takes seqs; a sentence gives dates. Sessions already `done`
     or `missed` are skipped rather than passed on -- `missed_policy` raises a
@@ -469,7 +474,7 @@ def reschedule(
     # An open window that began in the past runs up to yesterday: `MissedEvent`
     # treats today as available, because the athlete is back.
     window_end = unavailable_until or (today - dt.timedelta(days=1))
-    seqs = _resolve_seqs(state, missed_dates, unavailable_from, window_end)
+    seqs = resolve_seqs(state, missed_dates, unavailable_from, window_end)
     if not seqs:
         return RescheduleOutcome(
             tier="in_week_move",

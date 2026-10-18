@@ -337,7 +337,7 @@ def test_a_one_day_absence_selects_one_session_not_the_rest_of_the_block(
     state = services.load_block_state(db_session, active.id)
     third = state.by_seq[3].date
 
-    seqs = tools._resolve_seqs(state, (), third, third)
+    seqs = tools.resolve_seqs(state, (), third, third)
 
     assert seqs == (3,)
 
@@ -346,7 +346,7 @@ def test_the_window_has_an_upper_bound(db_session: Session, ready, active):
     state = services.load_block_state(db_session, active.id)
     first, third = state.by_seq[1].date, state.by_seq[3].date
 
-    assert tools._resolve_seqs(state, (), first, third) == (1, 2, 3)
+    assert tools.resolve_seqs(state, (), first, third) == (1, 2, 3)
 
 
 def test_tomorrow_is_an_in_week_move_not_a_block_wide_reshuffle(db_session: Session, ready, active):

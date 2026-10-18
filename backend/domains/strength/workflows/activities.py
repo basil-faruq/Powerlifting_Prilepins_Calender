@@ -326,10 +326,23 @@ class StrengthActivities:
             athlete = services.get_athlete(session, state.athlete_id)
             today = services.today_at(athlete, req.as_of)
 
-            seqs = req.missed_seqs or tools.missed_seqs(state, today)
+            if req.missed_seqs:
+                seqs = req.missed_seqs
+            elif req.unavailable_from is not None:
+                # The athlete named a window, and it may be entirely ahead of
+                # them -- "I am away all next week". Asking what has *gone
+                # by* would answer "nothing" and the absence would be
+                # silently ignored, so the window decides instead. Same
+                # derivation the chat tool uses for the same sentence.
+                window_end = req.unavailable_until or req.unavailable_from
+                seqs = tools.resolve_seqs(state, (), req.unavailable_from, window_end)
+            else:
+                seqs = tools.missed_seqs(state, today)
+
             if not seqs:
-                # The session was logged while this activity was being
-                # scheduled. A real outcome, not an error.
+                # Nothing to repair: the session was logged while this
+                # activity was being scheduled, or the named window holds no
+                # training. A real outcome, not an error.
                 return contracts.MissedOutcome(nothing_to_do=True)
 
             dates = {s.seq: s.date for s in state.plan}
