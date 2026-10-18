@@ -12,23 +12,30 @@ import datetime as dt
 import uuid
 
 from fastapi import APIRouter, Query, status
+from starlette.concurrency import run_in_threadpool
 
+from api import temporal_client
 from api.deps import SessionDep
 from api.schemas import (
     BlockCreate,
     BlockCreated,
     BlockOut,
     BlockPreviewOut,
+    BlockStateOut,
+    PauseIn,
     PlannedLiftOut,
     ProposalOut,
+    ResumeIn,
     SessionOut,
     ShapeCreate,
     ShapedPreviewOut,
     SimulateCreate,
     SimulationOut,
+    UnavailableIn,
 )
 from domains.strength import services
-from planner_core.errors import NotFound
+from domains.strength.workflows import contracts
+from planner_core.errors import BlockNotRunning, NotFound
 
 router = APIRouter(tags=["blocks"])
 
@@ -178,3 +185,98 @@ def block_sessions(
         for row in rows
         if (from_ is None or row.date >= from_) and (to is None or row.date <= to)
     ]
+
+
+# --- The block's own state machine (spec 15) ------------------------------
+#
+# These four are the API's half of `BlockWorkflow`. They are `async def` with
+# the blocking reads on a thread, which is the shape `health.py` already
+# uses -- the workflow client is async and the services are not.
+
+
+def _workflow_id(session, block_id: uuid.UUID) -> str | None:
+    """The execution that owns this block, or `None` if it has never run.
+
+    Reads the stored column rather than deriving the id: `continue_as_new`
+    keeps the workflow id, so a block reached by rolling over belongs to an
+    execution named after the first block of its chain.
+
+    Blocking, hence `def` and a threadpool at the call sites -- the routes
+    are async because the workflow client is, not because the database is.
+    """
+    block = services.get_block(session, block_id)
+    return block.workflow_id
+
+
+@router.get("/blocks/{block_id}/state", response_model=BlockStateOut)
+async def block_state(block_id: uuid.UUID, session: SessionDep) -> BlockStateOut:
+    """Where the plan has got to, straight from the workflow.
+
+    A draft that was never approved answers 200 with `state = "none"`. It is
+    an expected condition, not an error, and a 404 would make the UI branch
+    on a failure to render "not started yet".
+    """
+    workflow_id = await run_in_threadpool(_workflow_id, session, block_id)
+    if workflow_id is None:
+        return BlockStateOut.none(block_id)
+    view = await temporal_client.query(
+        workflow_id, contracts.CURRENT_STATE, result_type=contracts.WorkflowStateView
+    )
+    return BlockStateOut.of(view)
+
+
+@router.post(
+    "/blocks/{block_id}/unavailable",
+    response_model=BlockStateOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def report_unavailable(
+    block_id: uuid.UUID, body: UnavailableIn, session: SessionDep
+) -> BlockStateOut:
+    """ "I cannot train between these dates." The workflow asks spec 08 what to do.
+
+    202, not 200: the repair options are computed by the policy a moment
+    later and arrive as pending proposals, so the answer here is "heard",
+    not "done". Poll `/state`, or read `GET /proposals`.
+    """
+    return await _tell(
+        session, block_id, contracts.REPORT_UNAVAILABLE, body.from_date, body.until, body.injury
+    )
+
+
+@router.post(
+    "/blocks/{block_id}/pause", response_model=BlockStateOut, status_code=status.HTTP_202_ACCEPTED
+)
+async def pause_block(block_id: uuid.UUID, body: PauseIn, session: SessionDep) -> BlockStateOut:
+    """Stop the clock. The block stays `paused`, which still counts as running."""
+    return await _tell(session, block_id, contracts.PAUSE, body.reason)
+
+
+@router.post(
+    "/blocks/{block_id}/resume", response_model=BlockStateOut, status_code=status.HTTP_202_ACCEPTED
+)
+async def resume_block(block_id: uuid.UUID, body: ResumeIn, session: SessionDep) -> BlockStateOut:
+    """Pick training back up.
+
+    Whatever fell due while the block was paused is treated as an absence and
+    goes through the one reschedule path, rather than a second mechanism with
+    its own rules and its own bugs.
+    """
+    return await _tell(session, block_id, contracts.RESUME, body.on_date)
+
+
+async def _tell(session, block_id: uuid.UUID, signal_name: str, *args) -> BlockStateOut:
+    """Send a signal, then report where that left things.
+
+    A block with no workflow is a 409 rather than a silent success: telling
+    an execution that does not exist that you are ill achieves nothing, and
+    the athlete should be told their block was never started.
+    """
+    workflow_id = await run_in_threadpool(_workflow_id, session, block_id)
+    if workflow_id is None:
+        raise BlockNotRunning(block_id, "not started")
+    await temporal_client.signal(workflow_id, signal_name, *args)
+    view = await temporal_client.query(
+        workflow_id, contracts.CURRENT_STATE, result_type=contracts.WorkflowStateView
+    )
+    return BlockStateOut.of(view)

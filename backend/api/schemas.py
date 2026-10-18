@@ -319,6 +319,93 @@ class BlockOut(BaseModel):
         )
 
 
+class UnavailableIn(BaseModel):
+    """ "I cannot train between these dates."
+
+    `from` rather than `from_date` on the wire: it reads as the athlete would
+    say it, and `from` is a Python keyword only on this side of the alias.
+    An open `until` means "still away", which the policy closes at today.
+    """
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    from_date: dt.date = Field(alias="from")
+    until: dt.date | None = None
+    # Always a restart, however short (ADR-0010), and the proposal carries
+    # the line about seeing a physio.
+    injury: bool = False
+
+
+class PauseIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class ResumeIn(BaseModel):
+    """Back to training. Whatever was due in between is treated as an absence."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    on_date: dt.date | None = None
+
+
+class WorkflowSessionOut(BaseModel):
+    id: uuid.UUID
+    seq: int
+    week: int
+    slot: int
+    date: dt.date
+    status: enums.PlannedSessionStatus
+
+
+class BlockStateOut(BaseModel):
+    """Where the block's workflow has got to.
+
+    `state = "none"` is a block whose workflow was never started -- a draft
+    awaiting its first approval -- and it is a 200, not a 404. That is a real
+    and expected condition, and making the UI branch on an error to render
+    "not started yet" would be a poor trade.
+
+    `error` is set when an activity failed after its retries. The workflow
+    holds its state rather than dying, so this is a thing a human can read
+    and then fix (spec 15 §13).
+    """
+
+    state: str
+    block_id: uuid.UUID
+    next_session: WorkflowSessionOut | None = None
+    pending_proposal_ids: list[uuid.UUID] = Field(default_factory=list)
+    tier: enums.MissedTier | None = None
+    error: str | None = None
+
+    @classmethod
+    def none(cls, block_id: uuid.UUID) -> BlockStateOut:
+        return cls(state="none", block_id=block_id)
+
+    @classmethod
+    def of(cls, view) -> BlockStateOut:
+        return cls(
+            state=view.state,
+            block_id=view.block_id,
+            next_session=(
+                WorkflowSessionOut(
+                    id=view.next_session.id,
+                    seq=view.next_session.seq,
+                    week=view.next_session.week,
+                    slot=view.next_session.slot,
+                    date=view.next_session.date,
+                    status=view.next_session.status,
+                )
+                if view.next_session is not None
+                else None
+            ),
+            pending_proposal_ids=list(view.pending_proposal_ids),
+            tier=view.tier,
+            error=view.error,
+        )
+
+
 class PlannedLiftOut(BaseModel):
     lift_code: str
     variation: str | None

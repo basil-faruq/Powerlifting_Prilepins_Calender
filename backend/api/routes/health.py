@@ -13,6 +13,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
+from api import temporal_client
 from planner_core.config import get_settings
 from planner_core.db import ping_db
 
@@ -45,22 +46,25 @@ async def check_db() -> DependencyStatus:
         return "down"
 
 
-async def check_temporal(address: str) -> DependencyStatus:
-    """A TCP connect, not a client handshake.
+async def check_temporal() -> DependencyStatus:
+    """A real client handshake, which is what ADR-0001 said to replace the
+    raw TCP connect with once `temporalio` was a dependency.
 
-    `temporalio` arrives with spec 15; until then this only proves something is
-    listening on the port. Replace it with a real client connect once the SDK is
-    a dependency.
+    The port being open proved less than it looked: the dev server binds
+    before it has finished setting up its schema, so "something is
+    listening" and "a workflow can run" are different answers -- and since
+    spec 15, approving a proposal depends on the second one.
+
+    It takes no address, unlike its two neighbours. The workflow client is
+    shared and cached (one connection for the process, not one per probe),
+    so the address it uses is the configured one by construction. Accepting
+    an argument it could not honour would be worse than not accepting one.
     """
-    host, _, port = address.rpartition(":")
     try:
         async with asyncio.timeout(PROBE_TIMEOUT_S):
-            _, writer = await asyncio.open_connection(host, int(port))
-            writer.close()
-            await writer.wait_closed()
-    except (OSError, ValueError, TimeoutError):
+            return "ok" if await temporal_client.ping() else "down"
+    except TimeoutError:
         return "down"
-    return "ok"
 
 
 async def check_ollama(base_url: str) -> DependencyStatus:
@@ -78,7 +82,7 @@ async def health() -> HealthResponse:
     settings = get_settings()
     db, temporal, ollama = await asyncio.gather(
         check_db(),
-        check_temporal(settings.temporal_address),
+        check_temporal(),
         check_ollama(settings.ollama_base_url),
     )
     return HealthResponse(status="ok", db=db, temporal=temporal, ollama=ollama)

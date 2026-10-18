@@ -1,11 +1,9 @@
 """`/health` reports each dependency separately and never fails the request."""
 
 import asyncio
-import socket
 import time
 
 import httpx
-import pytest
 
 from api.routes import health as health_module
 
@@ -99,33 +97,41 @@ def test_check_db_gives_up_rather_than_hanging(monkeypatch):
     assert time.monotonic() - started < 0.4
 
 
-def test_check_temporal_against_a_listening_port():
-    """Loopback only — proves the probe recognises something listening.
+def test_check_temporal_is_ok_when_the_service_answers(monkeypatch):
+    """A client handshake now, not a TCP connect (ADR-0001, discharged).
 
-    A bare listening socket rather than `asyncio.start_server`: on Windows'
-    Proactor loop, tearing down a server that still has a live connection
-    deadlocks in `wait_closed()`.
+    The old probe opened a socket and called that healthy, which the dev
+    server can satisfy while still setting up its schema. Since spec 15 an
+    approval depends on workflows actually running, so the probe asks.
     """
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
-        listener.bind(("127.0.0.1", 0))
-        listener.listen(1)
-        port = listener.getsockname()[1]
 
-        assert asyncio.run(health_module.check_temporal(f"127.0.0.1:{port}")) == "ok"
+    async def _answers():
+        return True
 
+    monkeypatch.setattr(health_module.temporal_client, "ping", _answers)
 
-def test_check_temporal_against_a_closed_port():
-    # Bind to claim a free port, then release it so nothing is listening.
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.bind(("127.0.0.1", 0))
-        port = probe.getsockname()[1]
-
-    assert asyncio.run(health_module.check_temporal(f"127.0.0.1:{port}")) == "down"
+    assert asyncio.run(health_module.check_temporal()) == "ok"
 
 
-@pytest.mark.parametrize("address", ["localhost", "localhost:not-a-port", ""])
-def test_check_temporal_rejects_a_malformed_address(address):
-    assert asyncio.run(health_module.check_temporal(address)) == "down"
+def test_check_temporal_is_down_when_the_service_does_not(monkeypatch):
+    async def _silent():
+        return False
+
+    monkeypatch.setattr(health_module.temporal_client, "ping", _silent)
+
+    assert asyncio.run(health_module.check_temporal()) == "down"
+
+
+def test_check_temporal_is_down_when_the_handshake_hangs(monkeypatch):
+    """A probe must never be the reason a response does not come back."""
+
+    async def _hang():
+        await asyncio.sleep(health_module.PROBE_TIMEOUT_S * 10)
+        return True
+
+    monkeypatch.setattr(health_module.temporal_client, "ping", _hang)
+
+    assert asyncio.run(health_module.check_temporal()) == "down"
 
 
 def test_check_ollama_is_down_when_the_host_refuses(monkeypatch):

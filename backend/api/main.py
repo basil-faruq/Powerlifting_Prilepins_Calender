@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
+from api import temporal_client
 from api.routes import (
     athletes,
     blocks,
@@ -38,6 +39,7 @@ from planner_core.errors import (
     NotFound,
     PlanInvalid,
     ProposalStale,
+    TemporalUnavailable,
 )
 from planner_core.llm import warn_missing_models
 from planner_core.tracing import init_tracing, shutdown_tracing
@@ -81,6 +83,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Langfuse batches, so a process stopped with Ctrl-C loses the trace it
     # just made unless the pending spans are flushed here (spec 14 §5A).
     await run_in_threadpool(shutdown_tracing)
+    # The Temporal connection is opened lazily and cached, so it only exists
+    # if something actually needed it (spec 15).
+    await temporal_client.close_client()
 
 
 app = FastAPI(title="Powerlifting Block Planner", version="0.1.0", lifespan=lifespan)
@@ -158,6 +163,24 @@ async def _llm_unavailable(request: Request, exc: LlmUnavailable) -> JSONRespons
     Covers `OllamaUnreachable` and `ModelNotPulled` together: both mean the
     request was fine and the machine behind it was not, which is the one case
     where retrying the same request unchanged is the right advice.
+    """
+    return _problem(503, ProblemOut(detail=str(exc)))
+
+
+@app.exception_handler(TemporalUnavailable)
+async def _temporal_unavailable(request: Request, exc: TemporalUnavailable) -> JSONResponse:
+    """503, and the message names the two commands that fix it.
+
+    The sibling of `LlmUnavailable` above, and 503 for the same reason: the
+    request was well formed and the plan may be perfect, the service that
+    owns the block's state is simply not running. ADR-0007 anticipated this
+    as the workflow-failure case the mapping would have to grow.
+
+    Note which routes can raise it. Approving, rejecting, editing, pausing
+    and reading a block's state all go through the workflow and so depend on
+    it. **Logging a session does not**: that route commits the athlete's
+    record first and signals afterwards, because a training log must never be
+    lost to infrastructure (ADR-0014).
     """
     return _problem(503, ProblemOut(detail=str(exc)))
 

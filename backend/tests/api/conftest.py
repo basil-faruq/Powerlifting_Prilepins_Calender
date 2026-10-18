@@ -13,18 +13,32 @@ and these tests are about the real path.
 `tests.golden`, so the API tests exercise the authored 11x3 block -- 33
 sessions, four test singles, and a plan the validator accepts (CLAUDE.md
 non-negotiable #5) -- without needing the gitignored workbook.
+
+**The workflow runs in-process** (`_in_process_workflows`). Since spec 15 an
+approval is a message to a Temporal execution, and requiring a running
+server for every route test would be a poor trade -- slow, and failing for
+reasons that have nothing to do with the route. So the client functions are
+replaced by ones that call the very same activities directly, against this
+test's session. The real durable path has its own suite in
+`test_block_workflow_run.py`, under a time-skipping server.
 """
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
+import functools
 import uuid
 from decimal import Decimal
 
 import pytest
 from sqlmodel import Session
 
+from api import temporal_client
 from domains.strength import models
+from domains.strength.workflows import contracts
+from domains.strength.workflows.activities import StrengthActivities
+from planner_core import temporal_errors
 from tests import golden
 
 # This suite's own maxes. Distinct from the spreadsheet's examples
@@ -61,6 +75,125 @@ START = next_monday()
 # A month ago: a 1RM cannot be measured in the future, and `record_one_rep_maxes`
 # refuses one that claims to have been.
 TESTED_ON = dt.date.today() - dt.timedelta(days=30)
+
+
+# --- The workflow, without Temporal ---------------------------------------
+
+
+class _InProcessWorkflows:
+    """What `api.temporal_client` does, minus the durable execution.
+
+    Every call lands on the real `StrengthActivities`, so the route tests
+    still exercise `approve_proposal`, the staleness check and the error
+    translation -- the things a route test is actually about. What they do
+    not exercise is timers, signals and `continue_as_new`, which is what
+    `test_block_workflow_run.py` is for.
+
+    The alternative was a Temporal server per route test. It would have made
+    the suite minutes longer and would have failed for reasons that had
+    nothing to do with the routes.
+    """
+
+    def __init__(self, session: Session) -> None:
+        self._activities = StrengthActivities(lambda: _no_commit(session))
+        self.started: dict[str, uuid.UUID] = {}
+        self.signals: list[tuple[str, str, tuple]] = []
+
+    async def start_block_workflow(self, block_id, *, first_proposal_id=None) -> str:
+        workflow_id = contracts.workflow_id_for(block_id)
+        self.started[workflow_id] = block_id
+        self._activities.bind_workflow(
+            contracts.BindRequest(block_id=block_id, workflow_id=workflow_id)
+        )
+        if first_proposal_id is not None:
+            self._activities.commit_proposal(_decide(first_proposal_id))
+        return workflow_id
+
+    async def update(self, workflow_id: str, name: str, *args, result_type=None):
+        if name == contracts.APPROVE:
+            return self._activities.commit_proposal(_decide(args[0]))
+        if name == contracts.REJECT:
+            reason = args[1] if len(args) > 1 else None
+            return self._activities.reject_proposal(_decide(args[0], reason=reason))
+        if name == contracts.EDIT:
+            return self._activities.apply_edit(
+                contracts.EditRequest(proposal_id=args[0], as_of=_now(), changes=tuple(args[1]))
+            )
+        raise AssertionError(f"no in-process stand-in for update {name!r}")
+
+    async def signal(self, workflow_id: str, name: str, *args) -> None:
+        self.signals.append((workflow_id, name, args))
+
+    async def query(self, workflow_id: str, name: str, *, result_type=None):
+        block_id = self.started.get(workflow_id)
+        if block_id is None:
+            raise AssertionError(f"queried a workflow that was never started: {workflow_id}")
+        return contracts.WorkflowStateView(state="ACTIVE", block_id=block_id)
+
+    async def is_running(self, workflow_id: str) -> bool:
+        return workflow_id in self.started
+
+    async def ping(self) -> bool:
+        return True
+
+
+def _decide(proposal_id: uuid.UUID, reason: str | None = None) -> contracts.DecideRequest:
+    return contracts.DecideRequest(proposal_id=proposal_id, as_of=_now(), reason=reason)
+
+
+def _now() -> dt.datetime:
+    return dt.datetime.now(dt.UTC)
+
+
+@contextlib.contextmanager
+def _no_commit(session: Session):
+    """The activity's unit of work, sharing the test's own session.
+
+    It flushes instead of committing: the route that called it owns the
+    transaction here, which is exactly the arrangement spec 15 replaced in
+    production and the one the route tests still want.
+    """
+    session.flush()
+    yield session
+    session.flush()
+
+
+@pytest.fixture(autouse=True)
+def _in_process_workflows(monkeypatch, db_session: Session) -> _InProcessWorkflows:
+    """Autouse, because a route that reaches a real Temporal in a unit test
+    is a hang waiting to happen -- and because every approval route goes
+    through the workflow now, not just the ones that look like it."""
+    fake = _InProcessWorkflows(db_session)
+    for name in ("start_block_workflow", "update", "signal", "query", "is_running", "ping"):
+        monkeypatch.setattr(temporal_client, name, _translating(getattr(fake, name)))
+    monkeypatch.setattr(temporal_client, "get_client", _refuse_to_connect)
+    return fake
+
+
+def _translating(fn):
+    """Unwrap an activity's refusal, exactly as the real client does.
+
+    An activity turns `PlanInvalid` into an `ApplicationError` so it can
+    cross a process boundary, and `temporal_client` turns it back so
+    `api/main.py` still answers 422. Without this the stand-in would be
+    kinder than production and every refusal would surface as a 500 -- which
+    is precisely the class of bug these route tests exist to catch.
+    """
+
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        try:
+            return await fn(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001 - re-raised as itself
+            temporal_errors.reraise_domain(exc)
+
+    return wrapper
+
+
+async def _refuse_to_connect():
+    raise AssertionError(
+        "a route test tried to reach a real Temporal; add a stand-in to _InProcessWorkflows instead"
+    )
 
 
 @pytest.fixture
