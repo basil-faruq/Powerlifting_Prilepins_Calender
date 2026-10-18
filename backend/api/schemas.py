@@ -25,11 +25,14 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
+from collections.abc import Sequence
 from decimal import Decimal
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from domains.strength import enums, models, shaping_solver, simulator
+from domains.strength.agent import ChatTurn, Route
 from domains.strength.calendar_solver import SolverStats
 from domains.strength.schemas import (
     BlockDraft,
@@ -39,6 +42,7 @@ from domains.strength.schemas import (
     SessionChange,
 )
 from planner_core.proposal import ValidationResult, Violation
+from planner_core.tracing import trace_url
 
 # --- Athlete --------------------------------------------------------------
 
@@ -482,6 +486,145 @@ class ReindexOut(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     reindexed: int
+
+
+# --- Chat (spec 13) -------------------------------------------------------
+
+# Stripped before the length check, so a message of spaces is as empty as "" and
+# both come back as FastAPI's own 422 -- the same trap `routes/notes.py`
+# documents, and it must be used as `Annotated[ChatText, ...]`.
+ChatText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=4000)]
+
+
+class ChatCreate(BaseModel):
+    """One message from the athlete."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    athlete_id: uuid.UUID
+    # Absent starts a new conversation. A conversation that belongs to another
+    # athlete is a 404: `chat_message.conversation_id` is not a foreign key, so
+    # any UUID is syntactically valid and the ownership check is load-bearing.
+    conversation_id: uuid.UUID | None = None
+    message: ChatText
+    # Which template to plan against, when the athlete has more than one and
+    # the message does not say. Resolved by the agent when absent.
+    template_id: uuid.UUID | None = None
+
+
+class ChatResponse(BaseModel):
+    """What one turn produced: a reply, the route, and anything to approve."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reply: str
+    route: Route
+    # Pending, for the approval cards. The agent cannot approve (spec 13 §11).
+    proposals: list[ProposalOut] = []
+    simulation: SimulationOut | None = None
+    decision_id: uuid.UUID
+    conversation_id: uuid.UUID
+    # ADR-0007 rule 5 / ADR-0004 rule 4: any response showing a number derived
+    # from a seeded max says so. Spec 13 §3 omits it, which ADR-0015 records.
+    has_synthetic_one_rms: bool = False
+    # Null when tracing is off, which is the normal local case (spec 14 §12).
+    trace_url: str | None = None
+
+    @classmethod
+    def of(cls, turn: ChatTurn, proposals: Sequence[models.Proposal]) -> ChatResponse:
+        simulation = None
+        if turn.simulation is not None:
+            simulation = SimulationOut(
+                **turn.simulation.result.model_dump(),
+                block_id=turn.simulation.block_id,
+                has_synthetic_one_rms=turn.simulation.has_synthetic_one_rms,
+            )
+        return cls(
+            reply=turn.reply,
+            route=turn.route,
+            proposals=[ProposalOut.of(proposal) for proposal in proposals],
+            simulation=simulation,
+            decision_id=turn.decision_id,
+            conversation_id=turn.conversation_id,
+            has_synthetic_one_rms=turn.has_synthetic_one_rms,
+            trace_url=trace_url(turn.trace_id),
+        )
+
+
+class ChatMessageOut(BaseModel):
+    """One stored message, for the conversation history."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: uuid.UUID
+    role: enums.ChatRole
+    content: str
+    created_at: dt.datetime
+    decision_id: uuid.UUID | None
+
+    @classmethod
+    def of(cls, row: models.ChatMessage) -> ChatMessageOut:
+        return cls(
+            id=row.id,
+            role=row.role,
+            content=row.content,
+            created_at=row.created_at,
+            decision_id=row.decision_id,
+        )
+
+
+# --- Decisions (spec 14) --------------------------------------------------
+
+
+class DecisionOut(BaseModel):
+    """One decision, with its trace link and the turn that caused it.
+
+    `athlete_id` and `message` are joined from the `chat_message` row rather
+    than stored on `decision`: neither has a column, and this pair of specs
+    takes no migration (D1, ADR-0015). Both are null for a workflow decision,
+    which has no chat message -- reach those with `source=workflow`.
+
+    `outcome` null means pending: a proposal is waiting on the athlete. That is
+    what spec 21 renders as `pending`, with no new enum value.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: uuid.UUID
+    run_id: str
+    source: enums.ProposalSource
+    route: enums.DecisionRoute
+    filter_fired: str | None
+    outcome: enums.DecisionOutcome | None
+    proposal_id: uuid.UUID | None
+    created_at: dt.datetime
+    athlete_id: uuid.UUID | None = None
+    message: str | None = None
+    tool_calls: list[dict] = []
+    trace_url: str | None = None
+
+    @classmethod
+    def of(
+        cls,
+        row: models.Decision,
+        *,
+        athlete_id: uuid.UUID | None = None,
+        message: str | None = None,
+    ) -> DecisionOut:
+        return cls(
+            id=row.id,
+            run_id=row.run_id,
+            source=row.source,
+            route=row.route,
+            filter_fired=row.filter_fired,
+            outcome=row.outcome,
+            proposal_id=row.proposal_id,
+            created_at=row.created_at,
+            athlete_id=athlete_id,
+            message=message,
+            tool_calls=[dict(call) for call in row.tool_calls],
+            trace_url=trace_url(row.langfuse_trace_id),
+        )
 
 
 # --- Errors ---------------------------------------------------------------

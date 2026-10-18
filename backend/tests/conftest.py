@@ -34,7 +34,7 @@ from sqlalchemy.pool import NullPool
 from sqlmodel import Session
 
 from domains.strength.schemas import BlockDraft, ParsedEntry
-from planner_core import llm
+from planner_core import llm, tracing
 from planner_core.config import get_settings
 from tests import golden
 
@@ -67,12 +67,20 @@ def _clear_settings_cache():
     under one test's `LLM_PROVIDER` would otherwise be handed to the next test
     that asks -- an order-dependent failure, and the kind that is read as
     flakiness rather than as a missing `reset_models()` in some other file.
+
+    Tracing is reset for exactly the same reason: `init_tracing` stores what it
+    resolved in a module global, and Pydantic AI's instrumentation is global
+    too, so one test that enables tracing would leave it enabled for every
+    test after it -- and `test_traced_is_a_noop` would then pass or fail
+    depending on the order it ran in.
     """
     get_settings.cache_clear()
     llm.reset_models()
+    tracing.reset_tracing()
     yield
     get_settings.cache_clear()
     llm.reset_models()
+    tracing.reset_tracing()
 
 
 @pytest.fixture(autouse=True)

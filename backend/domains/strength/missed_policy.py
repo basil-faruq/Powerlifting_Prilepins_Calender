@@ -185,6 +185,14 @@ class PolicyResult(BaseModel):
     tier: Tier
     proposals: tuple[Proposal[StrengthPayload], ...] = ()
     failure: PolicyFailed | None = None
+    # What the solve did, when there was one. `PolicyFailed` has carried this
+    # since spec 07; the success path needs it too, because spec 14's
+    # `solver.calendar` span is emitted by the *caller* -- this module is pure
+    # and AST-tested, so it cannot open a span or read a clock itself, and
+    # `calendar_solver.solve` has no other impure caller to attach one to
+    # (ADR-0016). `None` on the tiers that compute their plan directly and on
+    # the `fast` path, which is greedy and has no solve to report.
+    stats: SolverStats | None = None
 
     @model_validator(mode="after")
     def _one_or_the_other(self) -> PolicyResult:
@@ -793,6 +801,7 @@ def _propose_in_week(
 
     held = {block_session.seq: block_session.date for block_session in state.plan}
     candidates: list[tuple[Mapping[int, dt.date], ScheduleOption | None]]
+    stats: SolverStats | None = None
 
     if fast:
         days = _feasible_days(state, event, first, horizon_end=horizon, config=config)
@@ -824,6 +833,8 @@ def _propose_in_week(
                 failure=PolicyFailed(reason=found.reason, stats=found.stats),
             )
         candidates = [(option.assignments, option) for option in found]
+        # Every option comes from one solve, so they all report it identically.
+        stats = found[0].stats if found else None
 
     proposals: list[Proposal[StrengthPayload]] = []
     dropped: list[str] = []
@@ -858,7 +869,7 @@ def _propose_in_week(
                 dropped=tuple(dropped),
             ),
         )
-    return PolicyResult(tier="in_week_move", proposals=tuple(proposals))
+    return PolicyResult(tier="in_week_move", proposals=tuple(proposals), stats=stats)
 
 
 def _propose_restart(

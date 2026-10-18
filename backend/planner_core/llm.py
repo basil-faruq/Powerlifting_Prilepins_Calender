@@ -33,7 +33,7 @@ from pydantic_ai.providers.anthropic import AnthropicProvider
 from pydantic_ai.providers.ollama import OllamaProvider
 
 from planner_core.config import get_settings
-from planner_core.errors import ModelNotPulled, OllamaUnreachable
+from planner_core.errors import LlmUnavailable, ModelNotPulled, OllamaUnreachable
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -271,6 +271,88 @@ def get_model(role: ModelRole) -> Model:
         if cached is None:
             cached = _MODEL_CACHE[role] = _build_model(role)
         return cached
+
+
+# HTTP statuses that mean "the machine behind the request is not serving it",
+# as opposed to "the request was wrong". 404 is here because Ollama answers it
+# for a model that is not pulled; 429 and 5xx because retrying unchanged is the
+# right advice for them, which is what a 503 says (ADR-0013).
+_UNAVAILABLE_STATUSES = frozenset({404, 408, 429})
+
+
+def unavailable_from(exc: BaseException) -> LlmUnavailable | None:
+    """The `LlmUnavailable` this failure amounts to, or `None` if it is not one.
+
+    `LlmUnavailable` is raised directly only by the embedder and the startup
+    probe. A *chat* model that is down raises Pydantic AI's own
+    `ModelAPIError` / `ModelHTTPError` (or an `httpx` transport error beneath
+    them) from inside `agent.run_sync`, and nothing translated those -- so a
+    dead Ollama looked like a bad sentence: the router retried, gave up, and
+    answered 200 "I couldn't understand that". Found by review; the tests
+    missed it because `RefusingModel` raised `OllamaUnreachable` directly,
+    which no real model call does.
+
+    It lives here because this module is the one place allowed to know what a
+    provider failure looks like (CLAUDE.md). It walks `__cause__` and
+    `__context__`, since Pydantic AI wraps what the SDK raised.
+
+    A 4xx that is not in `_UNAVAILABLE_STATUSES` is *not* translated: a 400 is
+    our request being wrong, which is a bug and should surface as one.
+    """
+    from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
+
+    seen: set[int] = set()
+    cause: BaseException | None = exc
+    while cause is not None and id(cause) not in seen:
+        seen.add(id(cause))
+        if isinstance(cause, LlmUnavailable):
+            return cause
+
+        reachable = False
+        detail = ""
+        if isinstance(cause, ModelHTTPError):
+            reachable = cause.status_code >= 500 or cause.status_code in _UNAVAILABLE_STATUSES
+            detail = f"HTTP {cause.status_code} from {cause.model_name}"
+        elif isinstance(cause, ModelAPIError | httpx.TransportError):
+            reachable = True
+            detail = str(cause)[:200]
+
+        if reachable:
+            settings = get_settings()
+            if settings.llm_provider == "ollama":
+                return OllamaUnreachable(settings.ollama_base_url, detail)
+            return LlmUnavailable(f"The language model did not answer ({detail}). Try again.")
+        cause = cause.__cause__ or cause.__context__
+    return None
+
+
+def structured[T](output_type: type[T]) -> object:
+    """How to ask the configured model for a `T`, as an `Agent(output_type=...)`.
+
+    **The mode matters more than the schema.** Pydantic AI's default is to
+    expose the output type as a tool the model must call. On `qwen2.5:14b`
+    through Ollama that is unreliable: with the router's one-field schema it
+    scored 0/4, replying with nothing or with plain text; the full 15-field
+    schema scored 7/30 on the eval (ADR-0015). The same model with Ollama's
+    native structured output -- the schema handed to the server as a grammar
+    -- scored 4/4 on the full schema in about 5 s a call instead of 78 s. My
+    first diagnosis was schema *width*, and a two-stage router was built on it;
+    measuring the modes side by side showed it was wrong, and that router was
+    removed.
+
+    So on Ollama the output is native. On Anthropic it stays the default tool
+    call, which is what Claude is dependable at and what has not been shown to
+    fail there -- and it is untested either way, since no request has ever been
+    made to that provider (ADR-0013).
+
+    It is here, not in the router, because which mode works is a fact about a
+    provider, and this is the one module allowed to know about providers.
+    """
+    from pydantic_ai import NativeOutput
+
+    if get_settings().llm_provider == "ollama":
+        return NativeOutput(output_type)
+    return output_type
 
 
 def reset_models() -> None:

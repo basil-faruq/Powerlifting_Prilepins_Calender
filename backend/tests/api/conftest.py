@@ -145,3 +145,28 @@ def propose(api_client, athlete, template, **overrides) -> tuple[uuid.UUID, uuid
     assert response.status_code == 201, response.text
     body = response.json()
     return uuid.UUID(body["block_id"]), uuid.UUID(body["proposal"]["id"])
+
+
+@pytest.fixture
+def chat_client(api_client, request):
+    """`api_client` plus an injected pair of models (spec 13).
+
+    Layered on top rather than folded into `api_client`, so every existing
+    route suite keeps the client it already had. The models come from the test
+    through `request.param`, or default to a pair that refuses on use -- which
+    is what makes a filter test's "no LLM was called" assertion mean something
+    at the route level too.
+    """
+    from api.deps import get_chat_models
+    from api.main import app
+    from domains.strength.agent.schemas import ChatModels
+    from tests.fakes import RefusingModel
+
+    models_ = getattr(request, "param", None) or ChatModels(
+        router=RefusingModel(), agent=RefusingModel()
+    )
+    app.dependency_overrides[get_chat_models] = lambda: models_
+    try:
+        yield api_client
+    finally:
+        app.dependency_overrides.pop(get_chat_models, None)

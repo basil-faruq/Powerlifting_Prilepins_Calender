@@ -69,6 +69,7 @@ from planner_core.errors import (
 )
 from planner_core.llm import Embedder, get_embedder
 from planner_core.proposal import ValidationResult, Violation
+from planner_core.tracing import traced
 
 logger = logging.getLogger(__name__)
 
@@ -431,10 +432,19 @@ def build_block_draft(
         # so a client has one error body to parse rather than two (ADR-0005).
         raise PlanInvalid.of("generator", str(exc)) from exc
 
-    result = validate(
-        draft.sessions,
-        validation_context(session, athlete, template, entries, weekday_map=slots),
-    )
+    # Spec 14's `validator` span sits here rather than inside `validate`:
+    # the validator is pure and AST-tested (ADR-0006), so it may not import a
+    # context manager that reads a clock. Same for the two solver spans below.
+    with traced("validator") as span:
+        result = validate(
+            draft.sessions,
+            validation_context(session, athlete, template, entries, weekday_map=slots),
+        )
+        span.set_many(
+            ok=result.ok,
+            violation_rules=sorted({violation.rule for violation in result.violations}),
+            warning_count=len(result.warnings),
+        )
     return draft, result
 
 
@@ -506,12 +516,25 @@ def build_shaped_draft(
         test_week=problem.test_week,
         overreach_from_week=overreach,
     )
-    shaped = shaping_solver.solve(
-        problem,
-        check=shaping_solver.validator_check(
-            athlete, template, maxes, lifts, start_date, slots, ctx
-        ),
-    )
+    with traced("solver.shaping") as span:
+        shaped = shaping_solver.solve(
+            problem,
+            check=shaping_solver.validator_check(
+                athlete, template, maxes, lifts, start_date, slots, ctx
+            ),
+        )
+        # Read from the solver's own stats, never a clock -- that is what keeps
+        # `shaping_solver` free of `datetime.now()` (ADR-0009, ADR-0011).
+        if isinstance(shaped, shaping_solver.ShapingInfeasible):
+            span.set("status", "INFEASIBLE")
+            span.set("reason", shaped.reason)
+        else:
+            span.set_many(
+                status=shaped.status,
+                objective=shaped.cost.total,
+                wall_time_s=shaped.stats.wall_time_s,
+                weeks=shaped.weeks,
+            )
     if isinstance(shaped, shaping_solver.ShapingInfeasible):
         raise PlanInvalid.of("shaping", shaped.reason)
 
@@ -735,16 +758,73 @@ def propose_for_missed(
             )
         block_id = generator.persist_block_row(session, draft, status="draft").id
 
-    return missed_policy.propose(
-        event,
-        state,
-        ctx,
-        cfg,
-        source=source,
-        fast=fast,
-        restart_draft=draft,
-        restart_block_id=block_id,
-    )
+    # Spec 14's `solver.calendar` span. `calendar_solver.solve` is reached only
+    # from pure `missed_policy`, so this is its nearest impure call site and
+    # `PolicyResult.stats` is how the numbers get here (ADR-0016).
+    with traced("solver.calendar", fast=fast, injury=event.injury) as span:
+        result = missed_policy.propose(
+            event,
+            state,
+            ctx,
+            cfg,
+            source=source,
+            fast=fast,
+            restart_draft=draft,
+            restart_block_id=block_id,
+        )
+        stats = result.stats or (result.failure.stats if result.failure else None)
+        span.set_many(
+            tier=result.tier,
+            num_options=len(result.proposals),
+            ok=result.ok,
+        )
+        if stats is not None:
+            span.set_many(
+                status=stats.status,
+                objective=stats.objective,
+                wall_time_s=stats.wall_time_s,
+            )
+        if result.failure is not None:
+            span.set("reason", result.failure.reason)
+    return result
+
+
+def save_proposals(
+    session: Session,
+    result: missed_policy.PolicyResult,
+) -> list[models.Proposal]:
+    """Persist a policy result's proposals as rows the athlete can approve.
+
+    Spec 08 left this undone, and nothing noticed because nothing called
+    `propose_for_missed` outside its own tests. `missed_policy` is pure, so
+    what it returns are frozen `planner_core.proposal.Proposal` value objects
+    -- and `approve_proposal` takes a `proposal_id` and looks up a *row*. Until
+    these are written, a reschedule produces options with nothing to approve.
+
+    The row keeps the value object's own `id`, so the id the agent puts in
+    `decision.tool_calls` is the id the approval route will be given.
+
+    Ordered as the policy ranked them: cheapest first, which is what makes
+    "the first one" a defensible default for `decision.proposal_id` when a
+    turn produced three options and the column holds one (ADR-0015).
+    """
+    rows: list[models.Proposal] = []
+    for proposal in result.proposals:
+        row = models.Proposal(
+            id=proposal.id,
+            block_id=proposal.block_id,
+            kind=proposal.kind,
+            status=proposal.status,
+            payload=proposal.payload.model_dump(mode="json"),
+            cost=dict(proposal.cost),
+            reasons=list(proposal.reasons),
+            warnings=[warning.model_dump(mode="json") for warning in proposal.warnings],
+            source=proposal.source,
+        )
+        session.add(row)
+        rows.append(row)
+    session.flush()
+    return rows
 
 
 def simulate_block(
@@ -786,17 +866,26 @@ def simulate_block(
         weekday_map=state.weekday_map,
         already_moved=[seq for seq, status in state.status_of.items() if status == "moved"],
     )
-    try:
-        result = simulator.simulate(
-            state,
-            ctx,
-            scenario=scenario,
-            cfg=simulator.DEFAULT_SIM_CONFIG.model_copy(update={"runs": runs}),
-            seed=seed,
-            gains=simulator.load_gains(),
+    with traced("simulator.run", runs=runs, seed=seed) as span:
+        try:
+            result = simulator.simulate(
+                state,
+                ctx,
+                scenario=scenario,
+                cfg=simulator.DEFAULT_SIM_CONFIG.model_copy(update={"runs": runs}),
+                seed=seed,
+                gains=simulator.load_gains(),
+            )
+        except simulator.ScenarioError as exc:
+            raise PlanInvalid.of("scenario", str(exc)) from exc
+        # `wall_time_s` is the simulator's own measurement; the span does not
+        # time itself, for the reason given on the `validator` span above.
+        span.set_many(
+            wall_time_s=result.stats.wall_time_s,
+            runs_finished=result.stats.runs_finished,
+            runs_restart=result.stats.runs_restart,
+            runs_unplannable=result.stats.runs_unplannable,
         )
-    except simulator.ScenarioError as exc:
-        raise PlanInvalid.of("scenario", str(exc)) from exc
 
     # The projection starts from the block's frozen snapshot, so the question is
     # whether *those* numbers were development data -- not what the athlete's
