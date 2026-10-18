@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://planner:planner@localhost:5432/planner"
     temporal_address: str = "localhost:7233"
     temporal_task_queue: str = "strength-planner"
+    # `temporal server start-dev` creates exactly this namespace and no other.
+    temporal_namespace: str = "default"
     timezone: str = "Europe/Berlin"
 
     # --- LLM provider ---------------------------------------------------

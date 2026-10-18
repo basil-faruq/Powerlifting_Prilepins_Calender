@@ -5,12 +5,14 @@
 #   ollama pull qwen2.5:14b
 #   ollama pull nomic-embed-text
 
-.PHONY: help infra infra-down api migrate migrate-sql seed seed-dev-1rms demo-notes demo-data calibrate import check-llm eval-router test lint format
+.PHONY: help infra infra-down infra-reset api worker migrate migrate-sql seed seed-dev-1rms demo-notes demo-data calibrate import check-llm eval-router test lint format
 
 help:
 	@echo "make infra       Postgres (pgvector) + Temporal dev server in Docker"
-	@echo "make infra-down  Stop them"
+	@echo "make infra-down  Stop them, KEEPING workflow history"
+	@echo "make infra-reset Stop them and DELETE all data, including workflows"
 	@echo "make api         FastAPI with hot reload on http://localhost:8000"
+	@echo "make worker      Temporal worker (needs make infra)"
 	@echo "make migrate     alembic upgrade head"
 	@echo "make migrate-sql Print the migration SQL without running it"
 	@echo "make seed        Create the athlete (1RMs are entered in the app)"
@@ -31,8 +33,21 @@ infra:
 infra-down:
 	docker compose down
 
+# Throws away the Postgres volume AND the Temporal one. Since spec 15 the dev
+# server persists workflow history, so `infra-down` alone no longer resets it --
+# this is the deliberate way to start a block over.
+infra-reset:
+	docker compose down -v
+
 api:
 	cd backend && uv run uvicorn api.main:app --reload
+
+# The other half of the app: workflows sleep on timers between sessions and
+# nothing advances a block without this running. `python -m` for the same reason
+# as `seed` below -- it keeps backend/ on sys.path rather than the module's own
+# directory.
+worker:
+	cd backend && uv run python -m domains.strength.workflows.worker
 
 migrate:
 	cd backend && uv run alembic upgrade head
