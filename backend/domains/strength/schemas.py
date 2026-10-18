@@ -439,6 +439,34 @@ class WeekdayChangePayload(StrengthPayload):
         return self
 
 
+class ForcedEvent(BaseModel):
+    """A disruption injected into every run, so "what if" has an answer.
+
+    Exactly one of `start_week` and `start_date`. A week means that training
+    week's Monday: "sick for 10 days in week 6" starts on the sixth Monday of
+    the block. `kind` is a label -- an illness and a trip both simply make the
+    athlete unavailable -- and shows up in the assumptions.
+
+    Defined here rather than in `simulator`, which imports numpy and simpy and
+    so cannot be reached from inside a Temporal workflow (spec 15). This is
+    four fields and an invariant; it belongs with the domain's other pure
+    models. `simulator.ForcedEvent` re-exports it, so no caller moved.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    kind: Literal["illness", "travel"]
+    start_week: int | None = Field(default=None, ge=1)
+    start_date: dt.date | None = None
+    days: int = Field(gt=0, le=90)
+
+    @model_validator(mode="after")
+    def _one_start(self) -> ForcedEvent:
+        if (self.start_week is None) == (self.start_date is None):
+            raise ValueError("give exactly one of start_week and start_date")
+        return self
+
+
 class NoteHit(BaseModel):
     """One retrieved training note, with how far it sat from the query.
 

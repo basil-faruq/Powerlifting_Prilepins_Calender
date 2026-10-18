@@ -500,3 +500,69 @@ def _reason(exc: ActivityError) -> str:
     """The message a human should see in `/blocks/{id}/state`."""
     cause = exc.cause
     return str(cause) if cause is not None else str(exc)
+
+
+# --- The three that are not a block's state machine -----------------------
+#
+# ADR-0011, ADR-0012 and ADR-0014 each deferred a placement to spec 15, and
+# all three are the same shape: slow work that was running on the API's own
+# threadpool, where it competes with every request and dies with the
+# process. None of them is a step in a block's life, so each is its own
+# one-activity workflow rather than a branch of `BlockWorkflow`.
+#
+# They return `dict` deliberately. A `SimulationResult` cannot be named here
+# -- `simulator` carries numpy and simpy -- and a pass-through has nothing
+# to say about its payload anyway. The route rebuilds the model at the edge,
+# which is where the type belongs.
+
+
+@workflow.defn(name="SimulateWorkflow")
+class SimulateWorkflow:
+    """A what-if over the rest of a block. Writes nothing."""
+
+    @workflow.run
+    async def run(self, req: contracts.SimulateRequest) -> dict:
+        return await workflow.execute_activity(
+            contracts.SIMULATE_BLOCK,
+            req,
+            # The bound on a runaway solve. A sync activity cannot be
+            # interrupted part-way, so there is nothing a heartbeat could
+            # usefully report in between.
+            start_to_close_timeout=timedelta(seconds=180),
+            retry_policy=RetryPolicy(maximum_attempts=2, non_retryable_error_types=_NEVER_RETRY),
+            result_type=dict,
+        )
+
+
+@workflow.defn(name="ShapePreviewWorkflow")
+class ShapePreviewWorkflow:
+    """A block the template does not cover. Writes nothing."""
+
+    @workflow.run
+    async def run(self, req: contracts.ShapeRequest) -> dict:
+        return await workflow.execute_activity(
+            contracts.SHAPE_PREVIEW,
+            req,
+            start_to_close_timeout=timedelta(seconds=60),
+            retry_policy=RetryPolicy(maximum_attempts=2, non_retryable_error_types=_NEVER_RETRY),
+            result_type=dict,
+        )
+
+
+@workflow.defn(name="IndexNoteWorkflow")
+class IndexNoteWorkflow:
+    """Embed a logged note, after the log itself is already safe.
+
+    Retried more willingly than its neighbours: the athlete is not waiting,
+    and a model that was down a minute ago may not be now.
+    """
+
+    @workflow.run
+    async def run(self, req: contracts.IndexNoteRequest) -> contracts.IndexNoteOutcome:
+        return await workflow.execute_activity(
+            contracts.INDEX_NOTE,
+            req,
+            start_to_close_timeout=timedelta(seconds=120),
+            retry_policy=RetryPolicy(maximum_attempts=3, non_retryable_error_types=_NEVER_RETRY),
+            result_type=contracts.IndexNoteOutcome,
+        )

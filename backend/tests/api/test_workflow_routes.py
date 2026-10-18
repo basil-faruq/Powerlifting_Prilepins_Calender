@@ -17,12 +17,13 @@ from __future__ import annotations
 import uuid
 
 import pytest
+import sqlalchemy as sa
 from sqlmodel import Session
 
 from api import temporal_client
 from domains.strength import models, services
 from domains.strength.workflows import contracts
-from planner_core.errors import TemporalUnavailable
+from planner_core.errors import PlanInvalid, TemporalUnavailable
 from tests.api.conftest import propose
 
 
@@ -271,3 +272,139 @@ def test_an_unknown_field_in_an_absence_is_refused(api_client, active):
     )
 
     assert response.status_code == 422
+
+
+# --- The three placements ADRs 0011, 0012 and 0014 deferred here ----------
+
+
+def test_an_infeasible_shape_is_still_a_422_with_its_violations(
+    api_client, db_session, ready, monkeypatch
+):
+    """The fiddliest thing in spec 15, isolated so it cannot pass by luck.
+
+    `build_shaped_draft` raises `PlanInvalid` for a shape CP-SAT cannot
+    satisfy. That now happens inside an activity, so the exception is
+    serialised into an `ApplicationError`, carried, and rebuilt -- and the
+    violations have to survive, because they *are* the response body
+    (spec 06 §13). Losing them would turn a useful 422 into a bare 500, and
+    nobody would notice until a user asked for an impossible block.
+
+    The failure is injected rather than provoked: a shape the solver really
+    cannot do is awkward to guarantee across calibrations, and what is
+    under test here is the round trip, not CP-SAT's judgement.
+    """
+    from domains.strength import services as domain_services
+
+    def _refuse(*_args, **_kwargs):
+        raise PlanInvalid.of("shape", "eleven weeks will not fit in six", ("squat",))
+
+    monkeypatch.setattr(domain_services, "build_shaped_draft", _refuse)
+
+    response = api_client.post(
+        "/blocks/shape-preview",
+        json={
+            "athlete_id": str(ready["athlete"].id),
+            "template_id": str(ready["template"].id),
+            "lifts": ["squat", "bench", "deadlift", "press", "row"],
+            "start_date": "2026-10-19",
+            "weeks": 6,
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    body = response.json()
+    assert [v["rule"] for v in body["violations"]] == ["shape"]
+    assert body["violations"][0]["message"] == "eleven weeks will not fit in six"
+    assert body["violations"][0]["refs"] == ["squat"]
+
+
+def test_a_shape_the_schema_rejects_never_reaches_the_activity(api_client, ready):
+    """Six to fourteen weeks is a field bound, answered before any solving."""
+    response = api_client.post(
+        "/blocks/shape-preview",
+        json={
+            "athlete_id": str(ready["athlete"].id),
+            "template_id": str(ready["template"].id),
+            "lifts": ["squat"],
+            "start_date": "2026-10-19",
+            "weeks": 1,
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_a_feasible_shape_answers_the_same_shape_it_always_did(api_client, db_session, ready):
+    """The contract spec 16 will generate types from, unchanged by the move."""
+    response = api_client.post(
+        "/blocks/shape-preview",
+        json={
+            "athlete_id": str(ready["athlete"].id),
+            "template_id": str(ready["template"].id),
+            "lifts": ["squat", "bench", "deadlift", "press", "row"],
+            "start_date": "2026-10-19",
+            "weeks": 8,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert {"draft", "validation", "weeks", "test_week", "cost", "stats"} <= set(body)
+    assert body["weeks"] == 8
+
+
+def test_simulating_answers_percentiles_not_a_forecast(api_client, db_session, active):
+    """Spec 15 moved where this runs, not what it says (CLAUDE.md #8)."""
+    response = api_client.post(f"/blocks/{active.id}/simulate", json={"runs": 20, "seed": 7})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["block_id"] == str(active.id)
+    assert body["assumptions"], "uncertainty is surfaced, never a single number"
+
+
+def test_simulating_a_block_that_is_not_running_is_still_a_409(api_client, db_session, ready):
+    """`BlockNotRunning` crossing the activity boundary and back."""
+    block_id, _ = propose(api_client, ready["athlete"], ready["template"])
+
+    response = api_client.post(f"/blocks/{block_id}/simulate", json={"runs": 10})
+
+    assert response.status_code == 409
+
+
+def test_the_note_is_indexed_after_the_log_is_committed(api_client, db_session, active):
+    """ADR-0014's deferral: the record first, the embedding second.
+
+    Both still happen -- this is not a regression dressed as a refactor --
+    but they are now separable, which is what makes the log survive a model
+    being down.
+    """
+    row = services.sessions_of(db_session, active.id)[0]
+    lifts = services.lifts_of(db_session, row.id)
+
+    response = api_client.post(
+        f"/sessions/{row.id}/log",
+        json={
+            "performed_on": row.date.isoformat(),
+            "entries": [
+                {
+                    "lift_code": lift.lift_code,
+                    "sets_done": lift.sets,
+                    "reps_done": lift.reps,
+                    "weight_kg": str(lift.weight_kg),
+                }
+                for lift in lifts
+            ],
+            "note": "knee felt tight at depth, bar speed fine",
+        },
+    )
+
+    assert response.status_code == 201
+    db_session.expire_all()
+    log = services.log_of(db_session, row.id)
+    assert log is not None
+    assert log.note is not None
+    chunks = db_session.scalars(
+        sa.select(models.NoteChunk).where(models.NoteChunk.log_id == log.id)
+    ).all()
+    assert chunks, "the note was logged but never indexed"

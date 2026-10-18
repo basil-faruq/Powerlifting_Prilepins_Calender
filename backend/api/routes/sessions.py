@@ -9,7 +9,7 @@ from fastapi import APIRouter, status
 from starlette.concurrency import run_in_threadpool
 
 from api import temporal_client
-from api.deps import EmbedderDep, SessionDep
+from api.deps import RunnerDep, SessionDep
 from api.schemas import PlannedLiftOut, SessionDetail, SessionLogIn, SessionLogOut
 from domains.strength import services
 from domains.strength.workflows import contracts
@@ -42,7 +42,7 @@ async def log_session(
     session_id: uuid.UUID,
     body: SessionLogIn,
     session: SessionDep,
-    embedder: EmbedderDep,
+    runner: RunnerDep,
 ) -> SessionLogOut:
     """Record what happened, and bank a made test single as a new 1RM.
 
@@ -67,12 +67,31 @@ async def log_session(
         # shape for `session_log.entries`, so there is nothing to translate.
         body.entries,
         body.note,
-        embedder=embedder,
+        # Indexing happens after the commit now, in its own activity
+        # (ADR-0014's deferral). Embedding a note took several seconds on
+        # the request thread for something the athlete is not waiting for.
+        embed=False,
     )
     session.commit()
     session.refresh(log)
+    await _index_the_note(runner, log.id)
     await _wake_the_workflow(session, session_id)
     return SessionLogOut.of(log)
+
+
+async def _index_the_note(runner, log_id: uuid.UUID) -> None:
+    """Embed the note, if there is one. Best effort, like the signal below.
+
+    The route still answers 201 when this fails, which is the invariant
+    `log_session` has protected since spec 12: a training record must never
+    be lost to a model being down. The note stays in `session_log.note` and
+    `POST /athletes/{id}/notes/reindex` catches up -- that backlog is why
+    ADR-0014 chose no queue table.
+    """
+    try:
+        await runner.index_note(contracts.IndexNoteRequest(log_id=log_id))
+    except Exception:  # noqa: BLE001 - a training record outranks its index
+        logger.warning("could not index the note on log %s", log_id, exc_info=True)
 
 
 async def _wake_the_workflow(session, session_id: uuid.UUID) -> None:

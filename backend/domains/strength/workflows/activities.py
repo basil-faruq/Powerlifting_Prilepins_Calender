@@ -47,13 +47,13 @@ import sqlalchemy as sa
 from sqlmodel import Session
 from temporalio import activity
 
-from domains.strength import enums, generator, missed_policy, models, services
+from domains.strength import enums, generator, missed_policy, models, notes, services
 from domains.strength.agent import recorder, tools
 from domains.strength.schemas import BlockDraft, MeasuredOneRm
 from domains.strength.workflows import contracts
 from planner_core import temporal_errors, tracing
 from planner_core.db import engine, unit_of_work
-from planner_core.errors import NotFound, PlannerError
+from planner_core.errors import LlmUnavailable, NotFound, PlannerError
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +148,9 @@ class StrengthActivities:
             self.run_missed_policy,
             self.finish_block,
             self.create_next_block,
+            self.simulate_block,
+            self.shape_preview,
+            self.index_note,
         ]
 
     # --- Binding ----------------------------------------------------------
@@ -488,6 +491,101 @@ class StrengthActivities:
             return contracts.NextBlockOutcome(
                 next_block_id=proposal.block_id, proposal_id=proposal.id
             )
+
+    # --- Questions, not decisions -----------------------------------------
+    #
+    # None of these three is part of a block's state machine. They were
+    # deferred here by ADR-0011, ADR-0012 and ADR-0014 for one shared
+    # reason: each is slow work that was running on the API's own
+    # threadpool, where it competes with every other request and dies with
+    # the process. Each gets its own one-activity workflow.
+
+    @_activity(contracts.SIMULATE_BLOCK)
+    def simulate_block(self, req: contracts.SimulateRequest) -> dict[str, object]:
+        """A thousand Monte-Carlo runs, off the request thread (ADR-0012).
+
+        Returns JSON rather than the `SimulationResult` itself: the workflow
+        that calls this is a pass-through and must not import `simulator`,
+        which carries numpy and simpy. The route rebuilds the model.
+
+        No heartbeat, deliberately. `services.simulate_block` is one opaque
+        call -- the Monte-Carlo loop is inside the simulator -- so the only
+        place a heartbeat could go is after the work, where it says nothing.
+        A sync activity cannot be interrupted part-way in any case, so
+        `start_to_close_timeout` is the real bound on a runaway solve.
+        """
+        with self._sessions() as session:
+            result, synthetic = services.simulate_block(
+                session,
+                req.block_id,
+                scenario=list(req.scenario),
+                runs=req.runs,
+                seed=req.seed,
+            )
+            return {
+                **result.model_dump(mode="json"),
+                "block_id": str(req.block_id),
+                "has_synthetic_one_rms": synthetic,
+            }
+
+    @_activity(contracts.SHAPE_PREVIEW)
+    def shape_preview(self, req: contracts.ShapeRequest) -> dict[str, object]:
+        """CP-SAT for a block the template does not cover (ADR-0011).
+
+        An infeasible request raises `PlanInvalid`, which crosses the wire as
+        a refusal and is rebuilt by the client, so the route still answers
+        422 with the same body it did when this ran in-process. That round
+        trip is the fiddliest thing in this file and has a test of its own.
+        """
+        with self._sessions() as session:
+            draft, result, shaped = services.build_shaped_draft(
+                session,
+                req.athlete_id,
+                req.template_id,
+                list(req.lifts),
+                req.start_date,
+                weeks=req.weeks,
+                test_week=req.test_week,
+            )
+            maxes = services.current_one_rms(session, req.athlete_id)
+            return {
+                "draft": draft.model_dump(mode="json"),
+                "validation": result.model_dump(mode="json"),
+                "has_synthetic_one_rms": any(
+                    row.is_synthetic for lift, row in maxes.items() if lift in draft.lifts
+                ),
+                "weeks": shaped.weeks,
+                "test_week": dict(shaped.test_week),
+                "overreach_from_week": shaped.overreach_from_week,
+                "cost": dict(shaped.cost),
+                "stats": shaped.stats.model_dump(mode="json"),
+            }
+
+    @_activity(contracts.INDEX_NOTE)
+    def index_note(self, req: contracts.IndexNoteRequest) -> contracts.IndexNoteOutcome:
+        """Embed a logged note after the log is already safe (ADR-0014).
+
+        Idempotent by construction, not by care: `index_log_note` deletes the
+        note's chunks before inserting, so a retry replaces rather than
+        doubles. That is the same property `reindex` already relied on.
+
+        A model that is down is reported, not raised. The note stays in
+        `session_log.note` and `POST /athletes/{id}/notes/reindex` picks it
+        up -- which is exactly the backlog ADR-0014 chose instead of a queue
+        table, and the reason this is allowed to fail quietly at all.
+        """
+        if self._embedder_factory is None:
+            return contracts.IndexNoteOutcome(skipped="no embedder configured")
+        with self._sessions() as session:
+            log = session.get(models.SessionLog, req.log_id)
+            if log is None:
+                raise NotFound("session log", req.log_id)
+            try:
+                chunks = notes.index_log_note(session, log, self._embedder_factory())
+            except LlmUnavailable as exc:
+                logger.warning("could not embed note for log %s: %s", req.log_id, exc)
+                return contracts.IndexNoteOutcome(skipped=str(exc))
+            return contracts.IndexNoteOutcome(chunks=len(chunks))
 
     # --- Shared helpers ---------------------------------------------------
 

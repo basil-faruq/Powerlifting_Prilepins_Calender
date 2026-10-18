@@ -164,7 +164,7 @@ async def start_block_workflow(
         if _already_started(exc):
             logger.info("workflow %s is already running", workflow_id)
             return workflow_id
-        _translate(exc)
+        translate(exc)
     return workflow_id
 
 
@@ -173,8 +173,8 @@ async def signal(workflow_id: str, name: str, *args: Any) -> None:
     try:
         async with asyncio.timeout(CALL_TIMEOUT_S):
             await handle.signal(name, args=list(args))
-    except Exception as exc:  # noqa: BLE001 - narrowed in `_translate`
-        _translate(exc)
+    except Exception as exc:  # noqa: BLE001 - narrowed in `translate`
+        translate(exc)
 
 
 async def update[T](workflow_id: str, name: str, *args: Any, result_type: type[T]) -> T:
@@ -188,8 +188,8 @@ async def update[T](workflow_id: str, name: str, *args: Any, result_type: type[T
     try:
         async with asyncio.timeout(CALL_TIMEOUT_S):
             return await handle.execute_update(name, args=list(args), result_type=result_type)
-    except Exception as exc:  # noqa: BLE001 - narrowed in `_translate`
-        _translate(exc)
+    except Exception as exc:  # noqa: BLE001 - narrowed in `translate`
+        translate(exc)
 
 
 async def query[T](workflow_id: str, name: str, *, result_type: type[T]) -> T:
@@ -197,8 +197,8 @@ async def query[T](workflow_id: str, name: str, *, result_type: type[T]) -> T:
     try:
         async with asyncio.timeout(CALL_TIMEOUT_S):
             return await handle.query(name, result_type=result_type)
-    except Exception as exc:  # noqa: BLE001 - narrowed in `_translate`
-        _translate(exc)
+    except Exception as exc:  # noqa: BLE001 - narrowed in `translate`
+        translate(exc)
 
 
 async def is_running(workflow_id: str) -> bool:
@@ -214,7 +214,7 @@ async def is_running(workflow_id: str) -> bool:
     except Exception as exc:  # noqa: BLE001 - narrowed below
         if _not_found(exc):
             return False
-        _translate(exc)
+        translate(exc)
     return description.status == WorkflowExecutionStatus.RUNNING
 
 
@@ -226,7 +226,7 @@ async def _handle(workflow_id: str) -> WorkflowHandle:
 # --- Turning Temporal's failures back into the planner's ------------------
 
 
-def _translate(exc: BaseException) -> NoReturn:
+def translate(exc: BaseException) -> NoReturn:
     """Re-raise as something `api/main.py` already knows how to answer.
 
     A domain refusal is rebuilt and raised as itself, so the status code is

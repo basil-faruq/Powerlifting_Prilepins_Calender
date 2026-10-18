@@ -34,7 +34,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from domains.strength import enums
-from domains.strength.schemas import SessionChange
+from domains.strength.schemas import ForcedEvent, SessionChange
 
 # --- Activity names -------------------------------------------------------
 # The workflow calls activities by these strings rather than by importing the
@@ -50,6 +50,14 @@ FINISH_BLOCK = "finish_block"
 CREATE_NEXT_BLOCK = "create_next_block"
 SET_BLOCK_STATUS = "set_block_status"
 
+# The three ADRs 0011, 0012 and 0014 each deferred to spec 15. None of them
+# is part of a block's state machine -- they answer a question or tidy up
+# after one -- so each runs as a one-activity workflow of its own rather
+# than as a step in `BlockWorkflow`.
+SIMULATE_BLOCK = "simulate_block"
+SHAPE_PREVIEW = "shape_preview"
+INDEX_NOTE = "index_note"
+
 ACTIVITY_NAMES: tuple[str, ...] = (
     BIND_WORKFLOW,
     LOAD_BLOCK_STATE,
@@ -60,6 +68,9 @@ ACTIVITY_NAMES: tuple[str, ...] = (
     FINISH_BLOCK,
     CREATE_NEXT_BLOCK,
     SET_BLOCK_STATUS,
+    SIMULATE_BLOCK,
+    SHAPE_PREVIEW,
+    INDEX_NOTE,
 )
 
 # --- Signal, update and query names --------------------------------------
@@ -198,6 +209,48 @@ class NextBlockRequest(Contract):
     block_id: uuid.UUID
     as_of: dt.datetime
     one_rms: dict[str, Decimal]
+
+
+class SimulateRequest(Contract):
+    """A what-if over the rest of a running block (ADR-0012's deferral).
+
+    `ForcedEvent` moved into `schemas` to be nameable here: it is four fields
+    and an invariant, and `simulator` -- where it used to live -- imports
+    numpy and simpy, which a workflow may not.
+    """
+
+    block_id: uuid.UUID
+    scenario: tuple[ForcedEvent, ...] = ()
+    runs: int = Field(ge=1, le=5000)
+    seed: int = 0
+
+
+class ShapeRequest(Contract):
+    """A block the template does not cover (ADR-0011's deferral)."""
+
+    athlete_id: uuid.UUID
+    template_id: uuid.UUID
+    lifts: tuple[str, ...] = Field(min_length=1)
+    start_date: dt.date
+    weeks: int | None = None
+    test_week: dict[str, int] | None = None
+
+
+class IndexNoteRequest(Contract):
+    """Embed a logged session's note (ADR-0014's deferral).
+
+    The log id, and nothing else. The note is already in the database -- the
+    whole point of moving this out of the log route is that writing the
+    record and embedding it are separable, so a model being down can never
+    cost the athlete a training log.
+    """
+
+    log_id: uuid.UUID
+
+
+class IndexNoteOutcome(Contract):
+    chunks: int = 0
+    skipped: str | None = None
 
 
 # --- Results --------------------------------------------------------------

@@ -1471,6 +1471,8 @@ def log_session(
     entries: Sequence[LoggedLift],
     note: str | None = None,
     embedder: Embedder | None = None,
+    *,
+    embed: bool = True,
 ) -> models.SessionLog:
     """Record what happened, and bank a made test single as a new 1RM.
 
@@ -1490,6 +1492,12 @@ def log_session(
     in `session_log.note` and `POST /athletes/{id}/notes/reindex` picks it up
     later. That is also why no queue table exists: a log with a note and no
     chunks is the backlog.
+
+    `embed=False` moves the indexing out entirely, which is what the log
+    route now does: it commits the record and then dispatches an activity
+    (ADR-0014's deferral to spec 15). The default is unchanged, so every
+    other caller -- and every test written against them -- behaves as
+    before.
     """
     planned = get_session_row(session, session_id)
     if log_of(session, session_id) is not None:
@@ -1532,7 +1540,8 @@ def log_session(
             )
         )
     session.flush()
-    _index_note(session, log, embedder)
+    if embed:
+        _index_note(session, log, embedder)
     return log
 
 
