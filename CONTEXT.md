@@ -126,7 +126,7 @@ message
   → validator accepts or rejects it
   → explainer writes 2–4 sentences using only numbers from the object
   → proposal shown for approval
-  → approval signals the Temporal workflow, which writes
+  → approval goes to the Temporal workflow, which writes
 ```
 
 The LLM appears twice: choosing the route, and phrasing the result. It never loops over the solver and never produces a number.
@@ -151,6 +151,14 @@ Recorded here so they are not silently decided in code. Each becomes a `proposed
 - Rest rules between *different* lifts — is deadlift allowed the day after squat? Currently a 1-day minimum with no strong justification.
 - Whether row, as an untested accessory, should be droppable automatically when a week is compressed.
 - The missed-session thresholds above.
+- **How long after a session's own day it counts as not done.** 12 hours past
+  the athlete's midnight, so a late evening session still counts and nobody
+  is asked about tomorrow at one minute past twelve. A starting value
+  (`contracts.GRACE_HOURS`, spec 15).
+- **How long to leave a rejected reschedule alone.** 24 hours, which only
+  exists to stop the workflow asking the same question in a loop -- the
+  session stays `planned` and still in the past, so nothing else would.
+  Also a starting value (`contracts.MISSED_RETRY_COOLDOWN_HOURS`).
 - After a long break: restart all 11 weeks, or allow a shortened block.
 - If a public URL is ever wanted: Cloudflare Tunnel on demand versus an always-on VPS. Either needs basic auth first — there is no login.
 - Whether to build the `domains/jobshop` adapter at all.

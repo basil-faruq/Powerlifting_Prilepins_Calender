@@ -1,0 +1,152 @@
+# Labelled messages for the router eval (spec 13 §5E).
+#
+# 30 cases, at least 6 per route, including German-English mixes and relative
+# dates. `scripts/eval_router.py` reads this, asks the configured model to route
+# each one, and prints accuracy with a confusion table.
+#
+# The label is the *route*, not the parameters. Parameter extraction is checked
+# by `tests/api/test_router.py` against a fixture model; what this measures is
+# the one thing only a real model can get wrong -- which of four actions a
+# sentence is asking for.
+#
+# `notes` on a case says why it is here. Several are deliberately adversarial:
+# a word that looks like one route in a sentence that means another. Those are
+# the cases worth watching when a model scores badly, because they are where a
+# small model's mistakes are systematic rather than random.
+#
+# No case here should fire a layer-1 filter. Pain messages never reach the
+# model, so including one would measure nothing; `tests/api/test_router.py`
+# covers the filters, with a model that raises if it is consulted.
+
+cases:
+  # --- answer: a question about the plan that already exists ---------------
+  - message: "what's on Thursday?"
+    expected: answer
+    notes: spec 13 §5B's own example.
+
+  - message: "how heavy is my next squat session?"
+    expected: answer
+
+  - message: "what did I write about sleep last month?"
+    expected: answer
+    notes: Should reach for search_notes, not plan anything.
+
+  - message: "which week of the block am I in?"
+    expected: answer
+
+  - message: "remind me what my current bench max is"
+    expected: answer
+
+  - message: "was ist am Freitag dran?"
+    expected: answer
+    notes: German. Same question as the first case.
+
+  - message: "how many sessions are left in this block?"
+    expected: answer
+    notes: >-
+      Adversarial: "block" is a planning word, and the sentence is a question
+      about the existing one.
+
+  - message: "did I hit all my sets on Monday?"
+    expected: answer
+    notes: Adversarial - a past weekday, not a reschedule.
+
+  # --- plan: asking for a new block ----------------------------------------
+  - message: "new block with squat, bench and deadlift"
+    expected: plan
+    notes: spec 13 §5B's own example.
+
+  - message: "start a new block on Monday"
+    expected: plan
+
+  - message: "can you plan the next block starting next Monday with all five lifts?"
+    expected: plan
+    notes: Relative date the model must resolve from the supplied table.
+
+  - message: "I tested a new squat max, set up the next block"
+    expected: plan
+    notes: >-
+      Adversarial: mentions a test. The route is still plan - recording the max
+      is a separate action the agent does not route to.
+
+  - message: "mach mir einen neuen Block ab Montag"
+    expected: plan
+    notes: German.
+
+  - message: "I want to run 9 weeks instead of 11 this time"
+    expected: plan
+    notes: >-
+      A shaped block. ADR-0011 means it comes back as a preview, but the route
+      is still plan.
+
+  - message: "set me up with squat and deadlift only, starting the 6th"
+    expected: plan
+
+  # --- reschedule: training was or will be missed --------------------------
+  - message: "I can't train tomorrow"
+    expected: reschedule
+    notes: spec 13 §5B's own example. Relative date, and a *future* absence.
+
+  - message: "I was sick for 9 days"
+    expected: reschedule
+    notes: spec 13 §5B's own example. Retrospective.
+
+  - message: "move Wednesday's session to Friday"
+    expected: reschedule
+
+  - message: "I missed Monday, can I still catch up?"
+    expected: reschedule
+    notes: >-
+      Adversarial: phrased as a question, which pulls towards answer. The
+      athlete is asking for the plan to change.
+
+  - message: "ich war letzte Woche krank, kann ich das noch aufholen?"
+    expected: reschedule
+    notes: German, and the same question-shaped request as the case above.
+
+  - message: "something came up, I'll be away from the 10th to the 14th"
+    expected: reschedule
+    notes: A stated date range rather than a relative one.
+
+  - message: "skip today, my back is stiff"
+    expected: reschedule
+    notes: >-
+      Adversarial and the sharpest case here. "Stiff" is not one of the pain
+      stems, so no filter fires and the router sees it - but if a model is
+      going to route a body-part mention to the wrong place, this is where.
+
+  - message: "I'll be travelling next week for work"
+    expected: reschedule
+    notes: >-
+      Adversarial against simulate: travel, stated as a fact rather than as a
+      hypothetical. Compare the simulate cases below.
+
+  # --- simulate: a what-if, or whether a number is reachable ---------------
+  - message: "what if I travel in week 7?"
+    expected: simulate
+    notes: spec 13 §5B's own example. The hypothetical twin of the case above.
+
+  - message: "will I hit 150 on squat?"
+    expected: simulate
+    notes: spec 13 §5B's own example.
+
+  - message: "what happens if I'm sick for 10 days in week 6?"
+    expected: simulate
+    notes: spec 13 §12's example, which the reply must answer with a p50 date.
+
+  - message: "is this block going to finish before the meet in May?"
+    expected: simulate
+
+  - message: "was passiert wenn ich zwei Wochen ausfalle?"
+    expected: simulate
+    notes: German what-if.
+
+  - message: "how likely am I to make the deadlift test?"
+    expected: simulate
+    notes: Asks for a probability, which only the simulator produces.
+
+  - message: "suppose I only manage two sessions a week from here"
+    expected: simulate
+    notes: >-
+      Adversarial: no "what if", and it reads like a statement. It is still a
+      hypothetical about the rest of the block.

@@ -69,6 +69,7 @@ from planner_core.errors import (
 )
 from planner_core.llm import Embedder, get_embedder
 from planner_core.proposal import ValidationResult, Violation
+from planner_core.tracing import traced
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,21 @@ def today_for(athlete: models.Athlete) -> dt.date:
     default (`athlete.timezone`), per the global conventions.
     """
     return dt.datetime.now(ZoneInfo(athlete.timezone)).date()
+
+
+def today_at(athlete: models.Athlete, as_of: dt.datetime) -> dt.date:
+    """`today_for`, but from a clock reading taken somewhere else.
+
+    A Temporal activity may not read the clock (spec 15 §10): it can be
+    retried, and a second attempt that lands after midnight would compute a
+    different `today` and so a different plan from the same inputs. The
+    workflow reads `workflow.now()` once -- the only clock in the system that
+    replays the same -- and every activity gets that reading.
+
+    The athlete's own timezone still decides the day boundary, exactly as in
+    `today_for`. Only the source of "now" changes.
+    """
+    return as_of.astimezone(ZoneInfo(athlete.timezone)).date()
 
 
 def get_athlete(session: Session, athlete_id: uuid.UUID) -> models.Athlete:
@@ -431,10 +447,19 @@ def build_block_draft(
         # so a client has one error body to parse rather than two (ADR-0005).
         raise PlanInvalid.of("generator", str(exc)) from exc
 
-    result = validate(
-        draft.sessions,
-        validation_context(session, athlete, template, entries, weekday_map=slots),
-    )
+    # Spec 14's `validator` span sits here rather than inside `validate`:
+    # the validator is pure and AST-tested (ADR-0006), so it may not import a
+    # context manager that reads a clock. Same for the two solver spans below.
+    with traced("validator") as span:
+        result = validate(
+            draft.sessions,
+            validation_context(session, athlete, template, entries, weekday_map=slots),
+        )
+        span.set_many(
+            ok=result.ok,
+            violation_rules=sorted({violation.rule for violation in result.violations}),
+            warning_count=len(result.warnings),
+        )
     return draft, result
 
 
@@ -506,12 +531,25 @@ def build_shaped_draft(
         test_week=problem.test_week,
         overreach_from_week=overreach,
     )
-    shaped = shaping_solver.solve(
-        problem,
-        check=shaping_solver.validator_check(
-            athlete, template, maxes, lifts, start_date, slots, ctx
-        ),
-    )
+    with traced("solver.shaping") as span:
+        shaped = shaping_solver.solve(
+            problem,
+            check=shaping_solver.validator_check(
+                athlete, template, maxes, lifts, start_date, slots, ctx
+            ),
+        )
+        # Read from the solver's own stats, never a clock -- that is what keeps
+        # `shaping_solver` free of `datetime.now()` (ADR-0009, ADR-0011).
+        if isinstance(shaped, shaping_solver.ShapingInfeasible):
+            span.set("status", "INFEASIBLE")
+            span.set("reason", shaped.reason)
+        else:
+            span.set_many(
+                status=shaped.status,
+                objective=shaped.cost.total,
+                wall_time_s=shaped.stats.wall_time_s,
+                weeks=shaped.weeks,
+            )
     if isinstance(shaped, shaping_solver.ShapingInfeasible):
         raise PlanInvalid.of("shaping", shaped.reason)
 
@@ -529,19 +567,42 @@ def create_block_proposal(
     template_id: uuid.UUID,
     lifts: Sequence[str],
     start_date: dt.date,
+    *,
+    one_rms: Mapping[str, Decimal] | None = None,
+    source: enums.ProposalSource = "chat",
+    new_one_rms: Mapping[str, Decimal] | None = None,
 ) -> models.Proposal:
     """A `draft` block and the `pending` proposal that would make it real.
 
     The block row exists from here (`proposal.block_id` is NOT NULL) but has no
     sessions: the schedule lives in the payload until a human approves it.
     `GET /blocks/{id}/sessions` is therefore empty, which spec 06 §12 asserts.
+
+    The three keyword arguments are all spec 15's rollover, and all default to
+    what every existing caller already did:
+
+    * `one_rms` overrides the planning maxes, through `build_block_draft`'s
+      existing seam. The next block is computed from the maxes the last one
+      produced, not from whatever `current_one_rms` says at approval time.
+    * `source` finally gets a writer other than `"chat"`. The value has been
+      legal since spec 02 and written by nothing.
+    * `new_one_rms` fills `StrengthPayload.new_one_rms`, which spec 05 defined
+      and nothing produced (ADR-0007 "Deliberately not done 6"). It is a record
+      of provenance for the trace view, not an instruction: `approve_proposal`
+      still deliberately ignores it, because `finish_block` has already written
+      the rows with the real dates the athlete lifted on.
     """
-    draft, result = build_block_draft(session, athlete_id, template_id, lifts, start_date)
+    draft, result = build_block_draft(
+        session, athlete_id, template_id, lifts, start_date, one_rms=one_rms
+    )
     if not result.ok:
         raise PlanInvalid(result)
 
     block = generator.persist_block_row(session, draft, status="draft")
-    payload = StrengthPayload(plan=draft.sessions)
+    payload = StrengthPayload(
+        plan=draft.sessions,
+        new_one_rms=dict(new_one_rms) if new_one_rms is not None else None,
+    )
     proposal = models.Proposal(
         block_id=block.id,
         kind="new_block",
@@ -551,7 +612,7 @@ def create_block_proposal(
             f"block {block.number} from template {draft.template_id} starting {draft.start_date}",
         ],
         warnings=[warning.model_dump(mode="json") for warning in result.warnings],
-        source="chat",
+        source=source,
     )
     session.add(proposal)
     session.flush()
@@ -735,16 +796,73 @@ def propose_for_missed(
             )
         block_id = generator.persist_block_row(session, draft, status="draft").id
 
-    return missed_policy.propose(
-        event,
-        state,
-        ctx,
-        cfg,
-        source=source,
-        fast=fast,
-        restart_draft=draft,
-        restart_block_id=block_id,
-    )
+    # Spec 14's `solver.calendar` span. `calendar_solver.solve` is reached only
+    # from pure `missed_policy`, so this is its nearest impure call site and
+    # `PolicyResult.stats` is how the numbers get here (ADR-0016).
+    with traced("solver.calendar", fast=fast, injury=event.injury) as span:
+        result = missed_policy.propose(
+            event,
+            state,
+            ctx,
+            cfg,
+            source=source,
+            fast=fast,
+            restart_draft=draft,
+            restart_block_id=block_id,
+        )
+        stats = result.stats or (result.failure.stats if result.failure else None)
+        span.set_many(
+            tier=result.tier,
+            num_options=len(result.proposals),
+            ok=result.ok,
+        )
+        if stats is not None:
+            span.set_many(
+                status=stats.status,
+                objective=stats.objective,
+                wall_time_s=stats.wall_time_s,
+            )
+        if result.failure is not None:
+            span.set("reason", result.failure.reason)
+    return result
+
+
+def save_proposals(
+    session: Session,
+    result: missed_policy.PolicyResult,
+) -> list[models.Proposal]:
+    """Persist a policy result's proposals as rows the athlete can approve.
+
+    Spec 08 left this undone, and nothing noticed because nothing called
+    `propose_for_missed` outside its own tests. `missed_policy` is pure, so
+    what it returns are frozen `planner_core.proposal.Proposal` value objects
+    -- and `approve_proposal` takes a `proposal_id` and looks up a *row*. Until
+    these are written, a reschedule produces options with nothing to approve.
+
+    The row keeps the value object's own `id`, so the id the agent puts in
+    `decision.tool_calls` is the id the approval route will be given.
+
+    Ordered as the policy ranked them: cheapest first, which is what makes
+    "the first one" a defensible default for `decision.proposal_id` when a
+    turn produced three options and the column holds one (ADR-0015).
+    """
+    rows: list[models.Proposal] = []
+    for proposal in result.proposals:
+        row = models.Proposal(
+            id=proposal.id,
+            block_id=proposal.block_id,
+            kind=proposal.kind,
+            status=proposal.status,
+            payload=proposal.payload.model_dump(mode="json"),
+            cost=dict(proposal.cost),
+            reasons=list(proposal.reasons),
+            warnings=[warning.model_dump(mode="json") for warning in proposal.warnings],
+            source=proposal.source,
+        )
+        session.add(row)
+        rows.append(row)
+    session.flush()
+    return rows
 
 
 def simulate_block(
@@ -786,17 +904,26 @@ def simulate_block(
         weekday_map=state.weekday_map,
         already_moved=[seq for seq, status in state.status_of.items() if status == "moved"],
     )
-    try:
-        result = simulator.simulate(
-            state,
-            ctx,
-            scenario=scenario,
-            cfg=simulator.DEFAULT_SIM_CONFIG.model_copy(update={"runs": runs}),
-            seed=seed,
-            gains=simulator.load_gains(),
+    with traced("simulator.run", runs=runs, seed=seed) as span:
+        try:
+            result = simulator.simulate(
+                state,
+                ctx,
+                scenario=scenario,
+                cfg=simulator.DEFAULT_SIM_CONFIG.model_copy(update={"runs": runs}),
+                seed=seed,
+                gains=simulator.load_gains(),
+            )
+        except simulator.ScenarioError as exc:
+            raise PlanInvalid.of("scenario", str(exc)) from exc
+        # `wall_time_s` is the simulator's own measurement; the span does not
+        # time itself, for the reason given on the `validator` span above.
+        span.set_many(
+            wall_time_s=result.stats.wall_time_s,
+            runs_finished=result.stats.runs_finished,
+            runs_restart=result.stats.runs_restart,
+            runs_unplannable=result.stats.runs_unplannable,
         )
-    except simulator.ScenarioError as exc:
-        raise PlanInvalid.of("scenario", str(exc)) from exc
 
     # The projection starts from the block's frozen snapshot, so the question is
     # whether *those* numbers were development data -- not what the athlete's
@@ -1051,6 +1178,9 @@ def record_one_rep_maxes(
     session: Session,
     athlete_id: uuid.UUID,
     entries: Sequence[MeasuredOneRm],
+    *,
+    block_id: uuid.UUID | None = None,
+    today: dt.date | None = None,
 ) -> dict[str, models.OneRepMax]:
     """Append measured maxes, and return what is current afterwards.
 
@@ -1060,9 +1190,18 @@ def record_one_rep_maxes(
 
     Every entry is checked before any is written, so a bad date in the fifth
     lift does not leave the first four recorded.
+
+    `block_id` attributes the rows to the block they came out of, the way
+    `log_session` already attributes a tested single. Spec 15's `finish_block`
+    is what passes it; a max the athlete types in belongs to no block.
+
+    `today` is for the same caller. A Temporal activity may not read the clock
+    (spec 15 §10), and in a time-skipping test the real clock would call every
+    logged date a future one and refuse the lot.
     """
     athlete = get_athlete(session, athlete_id)
-    today = today_for(athlete)
+    if today is None:
+        today = today_for(athlete)
 
     for entry in entries:
         if entry.set_on > today:
@@ -1079,6 +1218,7 @@ def record_one_rep_maxes(
                 kg=entry.kg,
                 set_on=entry.set_on,
                 source=entry.source,
+                block_id=block_id,
             )
         )
     session.flush()
@@ -1331,6 +1471,8 @@ def log_session(
     entries: Sequence[LoggedLift],
     note: str | None = None,
     embedder: Embedder | None = None,
+    *,
+    embed: bool = True,
 ) -> models.SessionLog:
     """Record what happened, and bank a made test single as a new 1RM.
 
@@ -1350,6 +1492,12 @@ def log_session(
     in `session_log.note` and `POST /athletes/{id}/notes/reindex` picks it up
     later. That is also why no queue table exists: a log with a note and no
     chunks is the backlog.
+
+    `embed=False` moves the indexing out entirely, which is what the log
+    route now does: it commits the record and then dispatches an activity
+    (ADR-0014's deferral to spec 15). The default is unchanged, so every
+    other caller -- and every test written against them -- behaves as
+    before.
     """
     planned = get_session_row(session, session_id)
     if log_of(session, session_id) is not None:
@@ -1392,7 +1540,8 @@ def log_session(
             )
         )
     session.flush()
-    _index_note(session, log, embedder)
+    if embed:
+        _index_note(session, log, embedder)
     return log
 
 

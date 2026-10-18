@@ -56,7 +56,12 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from domains.strength import missed_policy, rep_max
 from domains.strength.missed_policy import DEFAULT_MISSED_POLICY, MissedEvent, MissedPolicyConfig
-from domains.strength.schemas import BlockState, DraftLift, DraftSession
+from domains.strength.schemas import (
+    BlockState,
+    DraftLift,
+    DraftSession,
+    ForcedEvent,
+)
 from domains.strength.validator import ValidationContext
 
 # Where `scripts/calibrate_simulator.py` writes. Absent until the athlete runs
@@ -178,29 +183,6 @@ class ScenarioError(ValueError):
 
 
 # --- What the caller injects, and what comes back ---------------------------
-
-
-class ForcedEvent(BaseModel):
-    """A disruption injected into every run, so "what if" has an answer.
-
-    Exactly one of `start_week` and `start_date`. A week means that training
-    week's Monday: "sick for 10 days in week 6" starts on the sixth Monday of
-    the block. `kind` is a label -- an illness and a trip both simply make the
-    athlete unavailable -- and shows up in the assumptions.
-    """
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    kind: Literal["illness", "travel"]
-    start_week: int | None = Field(default=None, ge=1)
-    start_date: dt.date | None = None
-    days: int = Field(gt=0, le=90)
-
-    @model_validator(mode="after")
-    def _one_start(self) -> ForcedEvent:
-        if (self.start_week is None) == (self.start_date is None):
-            raise ValueError("give exactly one of start_week and start_date")
-        return self
 
 
 class DatePercentiles(BaseModel):

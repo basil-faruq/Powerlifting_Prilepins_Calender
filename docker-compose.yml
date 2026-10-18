@@ -30,8 +30,19 @@ services:
 
   temporal:
     # The Temporal CLI image; its ENTRYPOINT is ["temporal"], so `command` below
-    # runs `temporal server start-dev`. State is in-memory: restarting this
-    # container discards workflow history, which is fine until spec 15.
+    # runs `temporal server start-dev`.
+    #
+    # `--db-filename` puts the server's state in SQLite on a named volume, so a
+    # block's workflow survives `docker compose down` (spec 15). Without it the
+    # dev server is in-memory and an 11-week execution dies with the container,
+    # which would undercut the durability the workflow exists to demonstrate.
+    # `make infra-reset` is the deliberate way to throw that history away.
+    #
+    # The volume is mounted on /home/temporal, the image's own home, and not on
+    # a subdirectory of it. The server runs as uid 1000, and Docker only copies
+    # ownership onto a fresh volume from a directory that already exists in the
+    # image -- mounting a subdirectory instead creates it root-owned and the
+    # server dies with SQLite "unable to open database file (14)".
     image: temporalio/temporal:1.9.1
     command:
       - server
@@ -40,10 +51,22 @@ services:
       - 0.0.0.0
       - --ui-port
       - "8233"
+      - --db-filename
+      - /home/temporal/temporal.db
     ports:
       - "7233:7233" # gRPC frontend
       - "8233:8233" # Web UI
+    volumes:
+      - temporaldata:/home/temporal
+    healthcheck:
+      # The CLI is the image's own entrypoint, so this needs nothing installed.
+      test:
+        ["CMD", "temporal", "workflow", "list", "--address", "127.0.0.1:7233", "--limit", "1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     restart: unless-stopped
 
 volumes:
   pgdata:
+  temporaldata:

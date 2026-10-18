@@ -7,6 +7,11 @@ dependencies = [
     "alembic>=1.20.0",
     "fastapi>=0.143.0",
     "httpx>=0.28.1",
+    # Tracing (spec 14). `langfuse` is OpenTelemetry-based and brings the SDK
+    # with it; `planner_core/tracing.py` imports only the *API*, so the
+    # declaration is explicit rather than left transitive through pydantic-ai.
+    "langfuse>=3",
+    "opentelemetry-api>=1.30",
     # Was only transitive (via ortools); the simulator samples and takes
     # percentiles with it directly (spec 10), so it is declared.
     "numpy>=2.0",
@@ -19,9 +24,18 @@ dependencies = [
     # Starlette parses multipart bodies through this; without it an UploadFile
     # route raises at import. Needed by POST /templates/import (spec 06).
     "python-multipart>=0.0.20",
+    # Reads tests/fixtures/router_cases.yaml in scripts/eval_router.py (spec 13).
+    # Was only transitive via uvicorn[standard]; the eval script imports it.
+    "pyyaml>=6",
     # Discrete-event engine behind the Monte-Carlo simulator (spec 10).
     "simpy>=4.1",
     "sqlmodel>=0.0.48",
+    # Durable execution for the block workflow (spec 15): one BlockWorkflow per
+    # block, alive for the whole 11 weeks. The base package is deliberate -- the
+    # `[opentelemetry]` extra would put an OTel import under domains/, which
+    # tests/test_tracing.py forbids. Spans reach Langfuse through
+    # planner_core.tracing as everywhere else.
+    "temporalio>=1.34.0",
     "uvicorn[standard]>=0.54.0",
 ]
 
@@ -34,6 +48,13 @@ package = false
 pythonpath = ["."]
 testpaths = ["tests"]
 addopts = "-q"
+# Spec 15's workflow tests are the first async tests in the suite. `strict` is
+# the state the project has always run in (the key was simply unset), so saying
+# it out loud changes nothing: every other async path is driven by
+# `asyncio.run(...)` and must keep being collected as a plain sync test. The
+# loop scope is pinned only to silence pytest-asyncio's unset-default warning.
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "function"
 
 [tool.ruff]
 target-version = "py312"

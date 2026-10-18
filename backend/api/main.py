@@ -16,7 +16,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
-from api.routes import athletes, blocks, health, notes, proposals, sessions, templates
+from api import temporal_client
+from api.routes import (
+    athletes,
+    blocks,
+    chat,
+    decisions,
+    health,
+    notes,
+    proposals,
+    sessions,
+    templates,
+)
 from api.schemas import ProblemOut
 from domains.strength.importer import TemplateExistsError, TemplateImportError
 from domains.strength.services import WeekdayLocked
@@ -28,8 +39,10 @@ from planner_core.errors import (
     NotFound,
     PlanInvalid,
     ProposalStale,
+    TemporalUnavailable,
 )
 from planner_core.llm import warn_missing_models
+from planner_core.tracing import init_tracing, shutdown_tracing
 
 logger = logging.getLogger(__name__)
 
@@ -49,17 +62,30 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     them -- works with no model present at all, so a missing model is not a
     reason to refuse to start. The check is blocking, so it goes to a thread.
 
+    Tracing is started here too, and flushed after the `yield`. Both calls go
+    to a thread for the same reason the probe does: they open sockets.
+
     The bare `except` is deliberate rather than lazy. `warn_missing_models`
     already handles the expected failure, so anything reaching here is a bug in
     the probe itself -- and a bug in a *diagnostic* must not be what takes the
     API down. It is logged with its traceback, which is the only thing that
     would be lost by swallowing it.
     """
+    # Before the model probe, so that probe's own spans -- and every span
+    # after it -- have somewhere to go. `init_tracing` never raises and says
+    # in the log when it found no keys, so there is nothing to guard here.
+    await run_in_threadpool(init_tracing)
     try:
         await run_in_threadpool(warn_missing_models)
     except Exception:  # noqa: BLE001 - a diagnostic must not break startup
         logger.exception("The Ollama model check failed; starting anyway.")
     yield
+    # Langfuse batches, so a process stopped with Ctrl-C loses the trace it
+    # just made unless the pending spans are flushed here (spec 14 §5A).
+    await run_in_threadpool(shutdown_tracing)
+    # The Temporal connection is opened lazily and cached, so it only exists
+    # if something actually needed it (spec 15).
+    await temporal_client.close_client()
 
 
 app = FastAPI(title="Powerlifting Block Planner", version="0.1.0", lifespan=lifespan)
@@ -79,6 +105,8 @@ app.include_router(blocks.router)
 app.include_router(sessions.router)
 app.include_router(proposals.router)
 app.include_router(notes.router)
+app.include_router(chat.router)
+app.include_router(decisions.router)
 
 
 def _problem(status_code: int, problem: ProblemOut) -> JSONResponse:
@@ -135,6 +163,24 @@ async def _llm_unavailable(request: Request, exc: LlmUnavailable) -> JSONRespons
     Covers `OllamaUnreachable` and `ModelNotPulled` together: both mean the
     request was fine and the machine behind it was not, which is the one case
     where retrying the same request unchanged is the right advice.
+    """
+    return _problem(503, ProblemOut(detail=str(exc)))
+
+
+@app.exception_handler(TemporalUnavailable)
+async def _temporal_unavailable(request: Request, exc: TemporalUnavailable) -> JSONResponse:
+    """503, and the message names the two commands that fix it.
+
+    The sibling of `LlmUnavailable` above, and 503 for the same reason: the
+    request was well formed and the plan may be perfect, the service that
+    owns the block's state is simply not running. ADR-0007 anticipated this
+    as the workflow-failure case the mapping would have to grow.
+
+    Note which routes can raise it. Approving, rejecting, editing, pausing
+    and reading a block's state all go through the workflow and so depend on
+    it. **Logging a session does not**: that route commits the athlete's
+    record first and signals afterwards, because a training log must never be
+    lost to infrastructure (ADR-0014).
     """
     return _problem(503, ProblemOut(detail=str(exc)))
 

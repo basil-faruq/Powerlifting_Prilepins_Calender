@@ -112,6 +112,36 @@ class AlreadyDecided(PlannerError):
         super().__init__(f"proposal is already {status}")
 
 
+class TemporalUnavailable(PlannerError):
+    """The workflow service could not be reached. → 503.
+
+    The sibling of `LlmUnavailable` below, and 503 for the same reason: the
+    request was well formed and the plan may be perfect, the machine that owns
+    the block's state is simply not there. The fix is to start something, not
+    to change the request, so the message names what.
+
+    Spec 15 routes approval through the workflow, which makes Temporal a hard
+    dependency of approving, rejecting or editing a proposal. It is pointedly
+    *not* one of logging a session: that route commits the athlete's record
+    first and the signal afterwards, because a training log must never be lost
+    to infrastructure (ADR-0014, and `services.log_session`'s own docstring).
+    """
+
+    def __init__(self, address: str, detail: str = "") -> None:
+        self.address = address
+        self.detail = detail
+        message = (
+            f"The workflow service is not reachable at {address}. "
+            "Start it with 'make infra', and the worker with 'make worker'."
+        )
+        if detail:
+            message = (
+                f"The workflow service at {address} did not serve the request ({detail}). "
+                "If it is not running, start it with 'make infra' and 'make worker'."
+            )
+        super().__init__(message)
+
+
 class LlmUnavailable(PlannerError):
     """The local model service could not serve a request. → 503.
 

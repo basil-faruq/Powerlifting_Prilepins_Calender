@@ -1,6 +1,5 @@
 # Secrets and local config
 .env
-.env.example
 .env.local
 .claude.json
 .claude/settings.local.json
@@ -26,6 +25,10 @@ openpowerlifting*.csv
 .claude/skills/adr-*/
 .claude/templates/
 docs/adr/
+
+# Vendor skills installed by a plugin, the same way: on disk so the tool keeps
+# working, out of version control because they are not this project's code.
+.claude/skills/langfuse/
 
 # Python
 __pycache__/

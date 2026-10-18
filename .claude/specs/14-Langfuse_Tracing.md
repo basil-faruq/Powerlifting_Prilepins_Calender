@@ -1,3 +1,20 @@
+> **Revised 2026-10-17 (ADR-0016).** Implemented and accepted with eleven
+> modifications. The one that changes this document most:
+>
+> - **§7 is overridden.** `calendar_solver.py`, `shaping_solver.py`,
+>   `simulator.py` and `validator.py` are **not** wrapped. They are pure and
+>   AST-tested (ADR-0006/0009/0011/0012) — `calendar_solver.py` may not even
+>   import `time` — so the spans sit at the impure call sites in `services.py`
+>   and the agent, and read their numbers from the solvers' own stats objects.
+> - `calendar_solver.solve` has no impure caller at all, so
+>   `missed_policy.PolicyResult` gained `stats: SolverStats | None` to carry
+>   them out.
+> - §11 is now an AST test rather than prose.
+> - `GET /decisions?athlete_id=` joins through `chat_message` (`role = 'user'`),
+>   since `decision` has no athlete column and this spec takes no migration.
+>
+> Read `docs/adr/0016-langfuse-tracing.md` before changing anything here.
+
 ## 1. Overview
 
 Trace **every agent decision** in **Langfuse**: the router's route and which filter fired, every tool call, solver stats, validator verdicts and the approval outcome.
@@ -16,7 +33,7 @@ Langfuse runs on its **Cloud free tier** (Hobby: 50k units/month, 30-day retenti
 
 ## 3. Routes
 
-- `GET /decisions?athlete_id=&route=&outcome=&limit=50` → list of decisions with `trace_url`
+- `GET /decisions?athlete_id=&route=&outcome=&source=&limit=50` → list of decisions with `trace_url`. `athlete_id` and the input message come from a `chat_message` join (`role = 'user'`); a workflow decision has neither, so reach those with `source=workflow` (ADR-0016).
 - `GET /decisions/{id}` → decision with tool calls and `trace_url`
 
 ---
@@ -53,10 +70,10 @@ Langfuse runs on its **Cloud free tier** (Hobby: 50k units/month, 30-day retenti
 | Router layer 1 | `router.filters` | filter_fired |
 | Router layer 2 | (auto from Pydantic AI) | model, tokens |
 | Each tool | `tool.<name>` | input summary, output summary, duration |
-| `calendar_solver.solve` | `solver.calendar` | status, objective, wall_time, num_options |
-| `shaping_solver.solve` | `solver.shaping` | status, objective, wall_time |
-| `simulate` | `simulator.run` | runs, seed, wall_time |
-| `validator.validate` | `validator` | ok, violation rules, warning count |
+| **`services.propose_for_missed`** (not the solver: it has no impure caller) | `solver.calendar` | status, objective, wall_time, num_options — from `PolicyResult.stats` |
+| **`services.build_shaped_draft`** | `solver.shaping` | status, objective, wall_time — from `ShapedBlock` |
+| **`services.simulate_block`** | `simulator.run` | runs, seed, wall_time — from `SimulationResult.stats` |
+| **`services.build_block_draft`** | `validator` | ok, violation rules, warning count |
 | Approval (spec 15) | `approval` | proposal_id, outcome |
 
 - Workflow-originated runs (spec 15) use root span `workflow.missed_session`
@@ -78,7 +95,7 @@ Langfuse runs on its **Cloud free tier** (Hobby: 50k units/month, 30-day retenti
 
 ## 6. Changes to `api/main.py`
 
-- Call `init_tracing(settings)` on startup
+- Call `init_tracing(settings)` on startup, and **`shutdown_tracing()` after the lifespan's `yield`** — Langfuse batches, so a process stopped with Ctrl-C loses its last trace
 - Include `api/routes/decisions.py`
 
 ---
@@ -87,7 +104,10 @@ Langfuse runs on its **Cloud free tier** (Hobby: 50k units/month, 30-day retenti
 
 - `api/main.py`
 - `domains/strength/agent/agent.py`, `router.py`, `tools.py`
-- `domains/strength/calendar_solver.py`, `shaping_solver.py`, `simulator.py`, `validator.py` (wrap in `traced`, no logic change)
+- ~~`domains/strength/calendar_solver.py`, `shaping_solver.py`, `simulator.py`, `validator.py`~~ — **not changed.** Those four are pure and AST-tested; spans go at the impure call sites instead (ADR-0016).
+- `domains/strength/services.py` — the four spans above
+- `domains/strength/missed_policy.py` — `PolicyResult.stats`
+- `tests/conftest.py` — `tracing.reset_tracing()` in the autouse fixture
 
 ---
 
@@ -101,7 +121,7 @@ Langfuse runs on its **Cloud free tier** (Hobby: 50k units/month, 30-day retenti
 
 ## 9. Dependencies
 
-- `langfuse` (v3+, OpenTelemetry-based)
+- `langfuse` (v3+, OpenTelemetry-based; resolved to 5.0.2) and `opentelemetry-api`, declared rather than left transitive. `langfuse` is imported **inside** `init_tracing`, never at module scope.
 
 ---
 
@@ -137,8 +157,8 @@ Langfuse runs on its **Cloud free tier** (Hobby: 50k units/month, 30-day retenti
 
 ## 14. Definition of Done
 
-- [ ] Root span per chat turn and per workflow decision
-- [ ] Solver, simulator and validator spans with stats
-- [ ] Trace id saved on every `decision`
-- [ ] Decisions API returns trace links
-- [ ] App fully functional with tracing off
+- [x] Root span per chat turn. **Workflow decisions deferred to spec 15**, which owns `workflow.missed_session`
+- [x] Solver, simulator and validator spans with stats
+- [x] Trace id saved on every `decision`
+- [x] Decisions API returns trace links
+- [x] App fully functional with tracing off

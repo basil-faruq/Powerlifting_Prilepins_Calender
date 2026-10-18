@@ -19,7 +19,8 @@ actually ships — unexercised.
 
 from __future__ import annotations
 
-from collections.abc import Generator
+import contextlib
+from collections.abc import Generator, Iterator
 from decimal import Decimal
 from pathlib import Path
 
@@ -34,7 +35,7 @@ from sqlalchemy.pool import NullPool
 from sqlmodel import Session
 
 from domains.strength.schemas import BlockDraft, ParsedEntry
-from planner_core import llm
+from planner_core import llm, tracing
 from planner_core.config import get_settings
 from tests import golden
 
@@ -67,12 +68,20 @@ def _clear_settings_cache():
     under one test's `LLM_PROVIDER` would otherwise be handed to the next test
     that asks -- an order-dependent failure, and the kind that is read as
     flakiness rather than as a missing `reset_models()` in some other file.
+
+    Tracing is reset for exactly the same reason: `init_tracing` stores what it
+    resolved in a module global, and Pydantic AI's instrumentation is global
+    too, so one test that enables tracing would leave it enabled for every
+    test after it -- and `test_traced_is_a_noop` would then pass or fail
+    depending on the order it ran in.
     """
     get_settings.cache_clear()
     llm.reset_models()
+    tracing.reset_tracing()
     yield
     get_settings.cache_clear()
     llm.reset_models()
+    tracing.reset_tracing()
 
 
 @pytest.fixture(autouse=True)
@@ -130,6 +139,7 @@ def api_client(db_session: Session) -> Generator[TestClient, None, None]:
     exception *handler* produced rather than having the exception re-raised
     into the test -- which is the only way to check spec 06 §13's codes.
     """
+    from api.deps import get_runner
     from api.main import app
     from planner_core.db import get_session
     from planner_core.llm import get_embedder
@@ -141,10 +151,71 @@ def api_client(db_session: Session) -> Generator[TestClient, None, None]:
     # making HTTP calls -- passing or failing on whether a developer happens to
     # have a model pulled.
     app.dependency_overrides[get_embedder] = lambda: FakeEmbedder()
+    # Simulation, shaping and note indexing run in Temporal activities since
+    # spec 15. Requiring a worker for every route test would be a poor trade
+    # -- slow, and failing for reasons that have nothing to do with the
+    # route -- so these call the same services directly, against this
+    # session. The Temporal path has its own suite.
+    app.dependency_overrides[get_runner] = lambda: _InProcessRunner(db_session)
     try:
         yield TestClient(app, raise_server_exceptions=False)
     finally:
         app.dependency_overrides.clear()
+
+
+class _InProcessRunner:
+    """`TemporalRunner` without the Temporal.
+
+    Each method lands on the very same activity the worker would run, so the
+    response bodies these tests assert on are the real ones -- byte for
+    byte, including the 422 an infeasible shape produces.
+    """
+
+    def __init__(self, session: Session) -> None:
+        from domains.strength.workflows.activities import StrengthActivities
+        from tests.fakes import FakeEmbedder
+
+        self._activities = StrengthActivities(
+            lambda: _borrowed(session), embedder_factory=FakeEmbedder
+        )
+
+    async def simulate(self, request: object) -> dict:
+        return self._run(self._activities.simulate_block, request)
+
+    async def shape_preview(self, request: object) -> dict:
+        return self._run(self._activities.shape_preview, request)
+
+    async def index_note(self, request: object) -> None:
+        self._run(self._activities.index_note, request)
+
+    @staticmethod
+    def _run(activity, request):
+        """Unwrap the refusal, exactly as `temporal_client` would.
+
+        An activity turns `PlanInvalid` into an `ApplicationError` so it can
+        cross a process boundary. Skipping the rebuild here would make the
+        stand-in kinder than production: an infeasible shape would surface
+        as a 500 instead of the 422 with violations that it owes the caller.
+        """
+        from planner_core import temporal_errors
+
+        try:
+            return activity(request)
+        except Exception as exc:  # noqa: BLE001 - re-raised as itself
+            temporal_errors.reraise_domain(exc)
+
+
+@contextlib.contextmanager
+def _borrowed(session: Session) -> Iterator[Session]:
+    """The activity's unit of work, sharing the test's session.
+
+    Flushes instead of committing: the request owns the transaction here,
+    which is the arrangement spec 15 replaced in production and the one the
+    route tests still want.
+    """
+    session.flush()
+    yield session
+    session.flush()
 
 
 # --- The golden block -----------------------------------------------------

@@ -73,6 +73,14 @@ PlannedSessionStatus = Literal["planned", "done", "missed", "moved", "skipped"]
 # happen yet" (spec 08).
 HISTORY_STATUSES: tuple[str, ...] = ("done", "missed")
 
+# What spec 08 decides to do when the athlete could not train. Structural, not
+# day-counted: the old short/week/illness/restart tiers were replaced by these
+# four outcomes (ADR-0010). Defined here rather than in `missed_policy` for the
+# same reason as HISTORY_STATUSES above -- spec 15's workflow contracts need the
+# vocabulary and must not import the policy, which reaches CP-SAT through the
+# calendar solver. `missed_policy.Tier` is an alias of this.
+MissedTier = Literal["in_week_move", "week_shift", "fold", "restart"]
+
 # --- Proposals ------------------------------------------------------------
 # Re-exported from `planner_core.proposal`, not defined here: `Proposal` is
 # generic and domain-agnostic, so it is typed by these literals and cannot
