@@ -47,6 +47,7 @@ from decimal import Decimal
 from typing import Any
 
 from opentelemetry import trace
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
 from planner_core.config import Settings, get_settings
 
@@ -54,6 +55,12 @@ logger = logging.getLogger(__name__)
 
 # The instrumentation scope every span this module opens is attributed to.
 TRACER_NAME = "powerlifting-planner"
+
+# W3C trace-context, the standard way to say "this span belongs to that trace"
+# in a string. Spec 15 needs it: a Temporal activity runs in another thread and
+# may run in another process, and OpenTelemetry's current span lives in a
+# contextvar that crosses neither. So the parent travels as an argument.
+_PROPAGATOR = TraceContextTextMapPropagator()
 
 DISABLED_MESSAGE = "Tracing disabled (no Langfuse keys)"
 
@@ -177,20 +184,29 @@ class _OtelSpan(Span):
 
 
 @contextmanager
-def traced(name: str, **attrs: object) -> Iterator[Span]:
+def traced(name: str, *, parent: str | None = None, **attrs: object) -> Iterator[Span]:
     """Open a span named `name`, or yield a no-op when tracing is off.
 
     The asymmetry in the error handling is the point of the whole module:
     everything *tracing* does is wrapped and logged, and the body's own
     exception is re-raised untouched. A failure to observe the work must never
     become a failure of the work (spec 14 §11).
+
+    Nesting is normally automatic -- OpenTelemetry keeps the current span in a
+    contextvar, so a `traced` inside another is its child without being told.
+    `parent` is for the one case where that fails: a `traceparent` string from
+    `current_traceparent`, naming a span in another thread or another process.
+    Spec 15 needs it so the `approval` span lands in the same Langfuse trace as
+    the reschedule it approves, which a Temporal activity could not otherwise
+    know about.
     """
     if not enabled():
         yield _NULL_SPAN
         return
 
     try:
-        manager = trace.get_tracer(TRACER_NAME).start_as_current_span(name)
+        context = _PROPAGATOR.extract({"traceparent": parent}) if parent else None
+        manager = trace.get_tracer(TRACER_NAME).start_as_current_span(name, context=context)
         otel_span = manager.__enter__()
     except Exception:  # noqa: BLE001 - tracing must not break a request
         logger.warning("tracing: could not open span %r", name, exc_info=True)
@@ -228,6 +244,24 @@ def current_trace_id() -> str | None:
         return trace.format_trace_id(ctx.trace_id)
     except Exception:  # noqa: BLE001 - tracing must not break a request
         logger.warning("tracing: could not read the current trace id", exc_info=True)
+        return None
+
+
+def current_traceparent() -> str | None:
+    """The current span as a W3C `traceparent`, for carrying somewhere else.
+
+    `current_trace_id` names the *trace*; this names the trace **and the span
+    inside it**, which is what a child in another process needs in order to
+    hang off the right branch rather than off the root.
+    """
+    if not enabled():
+        return None
+    try:
+        carrier: dict[str, str] = {}
+        _PROPAGATOR.inject(carrier)
+        return carrier.get("traceparent")
+    except Exception:  # noqa: BLE001 - tracing must not break a request
+        logger.warning("tracing: could not read the current traceparent", exc_info=True)
         return None
 
 

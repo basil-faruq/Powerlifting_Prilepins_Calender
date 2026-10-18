@@ -305,6 +305,77 @@ def test_a_real_span_reports_its_trace_id(monkeypatch):
             assert inner.trace_id == trace_id
 
 
+def test_a_traceparent_reattaches_a_span_to_a_trace_in_another_context(monkeypatch):
+    """Spec 15's `approval` span has to land in the reschedule's own trace.
+
+    Contextvars do not cross a Temporal activity: the approval runs in a
+    different thread, often a different process, minutes or days after the
+    span it belongs under. So the parent travels as a `traceparent` string and
+    is reattached here. Without this the UI would show two unrelated traces
+    for one decision -- the options, and the answer.
+    """
+    pytest.importorskip("opentelemetry.sdk")
+    from opentelemetry.sdk.trace import TracerProvider
+
+    monkeypatch.setattr(tracing, "_state", tracing._State(True, "https://h", "p1"))
+    provider = TracerProvider()
+    monkeypatch.setattr(tracing.trace, "get_tracer", lambda name: provider.get_tracer(name))
+
+    with tracing.traced("workflow.missed_session") as root:
+        carried = tracing.current_traceparent()
+        root_trace_id = root.trace_id
+
+    assert carried is not None
+    assert root_trace_id is not None
+    # Back at the top level, nothing is current any more -- exactly the
+    # situation an activity starts in.
+    assert tracing.current_trace_id() is None
+
+    with tracing.traced("approval", parent=carried) as child:
+        assert child.trace_id == root_trace_id
+
+
+def test_a_span_with_no_parent_starts_its_own_trace(monkeypatch):
+    """The fallback when a proposal reaches the workflow from somewhere it
+    did not see -- an approval of a reschedule proposed in chat."""
+    pytest.importorskip("opentelemetry.sdk")
+    from opentelemetry.sdk.trace import TracerProvider
+
+    monkeypatch.setattr(tracing, "_state", tracing._State(True, "https://h", "p1"))
+    provider = TracerProvider()
+    monkeypatch.setattr(tracing.trace, "get_tracer", lambda name: provider.get_tracer(name))
+
+    with tracing.traced("workflow.missed_session") as first:
+        first_id = first.trace_id
+    with tracing.traced("approval") as second:
+        second_id = second.trace_id
+
+    assert first_id != second_id
+
+
+def test_a_nonsense_traceparent_does_not_break_the_body(monkeypatch):
+    """Tracing's failures are swallowed; the work goes on (spec 14 §11)."""
+    pytest.importorskip("opentelemetry.sdk")
+    from opentelemetry.sdk.trace import TracerProvider
+
+    monkeypatch.setattr(tracing, "_state", tracing._State(True, "https://h", "p1"))
+    provider = TracerProvider()
+    monkeypatch.setattr(tracing.trace, "get_tracer", lambda name: provider.get_tracer(name))
+
+    ran = False
+    with tracing.traced("approval", parent="not-a-traceparent"):
+        ran = True
+
+    assert ran
+
+
+def test_current_traceparent_is_none_when_disabled(no_keys):
+    tracing.init_tracing(no_keys)
+
+    with tracing.traced("chat_turn"):
+        assert tracing.current_traceparent() is None
+
+
 # --- The boundary (spec 14 §11) -------------------------------------------
 
 # `langfuse` is the vendor; `opentelemetry` is the vendor-neutral API but still

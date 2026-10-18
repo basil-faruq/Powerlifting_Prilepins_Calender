@@ -179,8 +179,12 @@ def _snapshot_is_synthetic(session: Session, state) -> bool:
     )
 
 
-def _missed_seqs(state, today: dt.date) -> tuple[int, ...]:
+def missed_seqs(state, today: dt.date) -> tuple[int, ...]:
     """Sessions that have gone by without being trained or written off.
+
+    Public, because spec 15's workflow asks the same question on a timer that
+    the chat tool asks in a sentence, and the two must agree on the answer --
+    a second derivation is how "missed" would come to mean two things.
 
     Derived rather than read from a status, because there is no status for it.
     ADR-0010: a session the athlete means to make up stays `planned` with a date
@@ -275,7 +279,7 @@ def get_block(session: Session, athlete: models.Athlete) -> BlockSnapshot:
         next_sessions=upcoming,
         one_rms=one_rms,
         has_synthetic_one_rms=_snapshot_is_synthetic(session, state),
-        missed_seqs=_missed_seqs(state, today),
+        missed_seqs=missed_seqs(state, today),
         weekday_map=state.weekday_map,
     )
 
