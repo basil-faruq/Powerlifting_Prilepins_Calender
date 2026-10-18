@@ -384,6 +384,18 @@ class BlockStateOut(BaseModel):
         return cls(state="none", block_id=block_id)
 
     @classmethod
+    def unknown(cls, block_id: uuid.UUID) -> BlockStateOut:
+        """The signal landed; nothing could say what it led to.
+
+        A workflow's state can only be read by a running worker, while a
+        signal is durable the moment the server takes it. Saying "unknown"
+        is the honest answer to "what happened next" -- better than a 503,
+        which would claim the signal failed and invite the athlete to send
+        it twice.
+        """
+        return cls(state="unknown", block_id=block_id)
+
+    @classmethod
     def of(cls, view) -> BlockStateOut:
         return cls(
             state=view.state,

@@ -60,6 +60,11 @@ CALL_TIMEOUT_S = 20.0
 # Connecting is separate and shorter: it is a TCP handshake, not work.
 CONNECT_TIMEOUT_S = 5.0
 
+# A query is answered by a worker straight from memory, or not at all. There
+# is no slow-but-fine case to wait out, so waiting as long as an approval
+# only makes "no worker is running" take twenty seconds to say.
+QUERY_TIMEOUT_S = 5.0
+
 _client: Client | None = None
 _lock = asyncio.Lock()
 
@@ -91,11 +96,17 @@ async def get_client() -> Client:
 
 
 async def close_client() -> None:
-    """Drop the cached client. Called from the API's lifespan."""
+    """Let go of the cached client. Called from the API's lifespan.
+
+    Dropping the reference is the whole of it: `ServiceClient` exposes no
+    `close`, and its connection is released when it is collected. An earlier
+    version called one, which does not exist -- the `AttributeError` came
+    out of the lifespan's shutdown and wedged the server instead of
+    stopping it, which no test caught because none exercises shutdown with
+    a live connection.
+    """
     global _client
-    if _client is not None:
-        await _client.service_client.close()
-        _client = None
+    _client = None
 
 
 def reset_client() -> None:
@@ -195,7 +206,7 @@ async def update[T](workflow_id: str, name: str, *args: Any, result_type: type[T
 async def query[T](workflow_id: str, name: str, *, result_type: type[T]) -> T:
     handle = await _handle(workflow_id)
     try:
-        async with asyncio.timeout(CALL_TIMEOUT_S):
+        async with asyncio.timeout(QUERY_TIMEOUT_S):
             return await handle.query(name, result_type=result_type)
     except Exception as exc:  # noqa: BLE001 - narrowed in `translate`
         translate(exc)

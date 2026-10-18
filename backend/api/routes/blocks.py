@@ -9,6 +9,7 @@ when a human approves it (CLAUDE.md non-negotiable #2), which is
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import uuid
 
 from fastapi import APIRouter, Query, status
@@ -35,7 +36,9 @@ from api.schemas import (
 )
 from domains.strength import services
 from domains.strength.workflows import contracts
-from planner_core.errors import BlockNotRunning, NotFound
+from planner_core.errors import BlockNotRunning, NotFound, TemporalUnavailable
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["blocks"])
 
@@ -269,8 +272,24 @@ async def _tell(session, block_id: uuid.UUID, signal_name: str, *args) -> BlockS
     workflow_id = await run_in_threadpool(_workflow_id, session, block_id)
     if workflow_id is None:
         raise BlockNotRunning(block_id, "not started")
+
+    # The signal is the operation, and it is durable the moment the server
+    # accepts it -- a worker does not have to be running for that.
     await temporal_client.signal(workflow_id, signal_name, *args)
-    view = await temporal_client.query(
-        workflow_id, contracts.CURRENT_STATE, result_type=contracts.WorkflowStateView
-    )
+
+    # The state is a convenience on top. Reading it back *does* need a live
+    # worker, so a failure here must not be reported as a failure of the
+    # signal: the athlete would be told their illness was not recorded when
+    # it was, and would quite reasonably send it again.
+    try:
+        view = await temporal_client.query(
+            workflow_id, contracts.CURRENT_STATE, result_type=contracts.WorkflowStateView
+        )
+    except TemporalUnavailable:
+        logger.warning(
+            "sent %s to %s but could not read the state back; is the worker running?",
+            signal_name,
+            workflow_id,
+        )
+        return BlockStateOut.unknown(block_id)
     return BlockStateOut.of(view)

@@ -408,3 +408,41 @@ def test_the_note_is_indexed_after_the_log_is_committed(api_client, db_session, 
         sa.select(models.NoteChunk).where(models.NoteChunk.log_id == log.id)
     ).all()
     assert chunks, "the note was logged but never indexed"
+
+
+def test_a_signal_that_lands_is_not_reported_as_a_failure(
+    api_client, active, monkeypatch, _in_process_workflows
+):
+    """A signal is durable the moment the server takes it.
+
+    Reading the state back afterwards is a convenience, and it is the only
+    half that needs a live worker. Answering 503 because the read failed
+    would tell the athlete their illness was not recorded when it was -- and
+    they would quite reasonably send it again.
+    """
+
+    async def _no_worker(*_args, **_kwargs):
+        raise TemporalUnavailable("localhost:7233", "no workers")
+
+    monkeypatch.setattr(temporal_client, "query", _no_worker)
+
+    response = api_client.post(f"/blocks/{active.id}/pause", json={"reason": "flu"})
+
+    assert response.status_code == 202
+    assert response.json()["state"] == "unknown"
+    names = [name for _, name, _ in _in_process_workflows.signals]
+    assert contracts.PAUSE in names
+
+
+def test_a_signal_that_does_not_land_is_still_a_503(api_client, active, monkeypatch):
+    """The other half. If the signal itself never reached the server, there
+    is nothing durable and the athlete should be told."""
+
+    async def _down(*_args, **_kwargs):
+        raise TemporalUnavailable("localhost:7233", "connection refused")
+
+    monkeypatch.setattr(temporal_client, "signal", _down)
+
+    response = api_client.post(f"/blocks/{active.id}/pause", json={"reason": "flu"})
+
+    assert response.status_code == 503
