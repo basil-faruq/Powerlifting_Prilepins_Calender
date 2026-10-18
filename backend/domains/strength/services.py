@@ -567,19 +567,42 @@ def create_block_proposal(
     template_id: uuid.UUID,
     lifts: Sequence[str],
     start_date: dt.date,
+    *,
+    one_rms: Mapping[str, Decimal] | None = None,
+    source: enums.ProposalSource = "chat",
+    new_one_rms: Mapping[str, Decimal] | None = None,
 ) -> models.Proposal:
     """A `draft` block and the `pending` proposal that would make it real.
 
     The block row exists from here (`proposal.block_id` is NOT NULL) but has no
     sessions: the schedule lives in the payload until a human approves it.
     `GET /blocks/{id}/sessions` is therefore empty, which spec 06 §12 asserts.
+
+    The three keyword arguments are all spec 15's rollover, and all default to
+    what every existing caller already did:
+
+    * `one_rms` overrides the planning maxes, through `build_block_draft`'s
+      existing seam. The next block is computed from the maxes the last one
+      produced, not from whatever `current_one_rms` says at approval time.
+    * `source` finally gets a writer other than `"chat"`. The value has been
+      legal since spec 02 and written by nothing.
+    * `new_one_rms` fills `StrengthPayload.new_one_rms`, which spec 05 defined
+      and nothing produced (ADR-0007 "Deliberately not done 6"). It is a record
+      of provenance for the trace view, not an instruction: `approve_proposal`
+      still deliberately ignores it, because `finish_block` has already written
+      the rows with the real dates the athlete lifted on.
     """
-    draft, result = build_block_draft(session, athlete_id, template_id, lifts, start_date)
+    draft, result = build_block_draft(
+        session, athlete_id, template_id, lifts, start_date, one_rms=one_rms
+    )
     if not result.ok:
         raise PlanInvalid(result)
 
     block = generator.persist_block_row(session, draft, status="draft")
-    payload = StrengthPayload(plan=draft.sessions)
+    payload = StrengthPayload(
+        plan=draft.sessions,
+        new_one_rms=dict(new_one_rms) if new_one_rms is not None else None,
+    )
     proposal = models.Proposal(
         block_id=block.id,
         kind="new_block",
@@ -589,7 +612,7 @@ def create_block_proposal(
             f"block {block.number} from template {draft.template_id} starting {draft.start_date}",
         ],
         warnings=[warning.model_dump(mode="json") for warning in result.warnings],
-        source="chat",
+        source=source,
     )
     session.add(proposal)
     session.flush()
@@ -1155,6 +1178,9 @@ def record_one_rep_maxes(
     session: Session,
     athlete_id: uuid.UUID,
     entries: Sequence[MeasuredOneRm],
+    *,
+    block_id: uuid.UUID | None = None,
+    today: dt.date | None = None,
 ) -> dict[str, models.OneRepMax]:
     """Append measured maxes, and return what is current afterwards.
 
@@ -1164,9 +1190,18 @@ def record_one_rep_maxes(
 
     Every entry is checked before any is written, so a bad date in the fifth
     lift does not leave the first four recorded.
+
+    `block_id` attributes the rows to the block they came out of, the way
+    `log_session` already attributes a tested single. Spec 15's `finish_block`
+    is what passes it; a max the athlete types in belongs to no block.
+
+    `today` is for the same caller. A Temporal activity may not read the clock
+    (spec 15 §10), and in a time-skipping test the real clock would call every
+    logged date a future one and refuse the lot.
     """
     athlete = get_athlete(session, athlete_id)
-    today = today_for(athlete)
+    if today is None:
+        today = today_for(athlete)
 
     for entry in entries:
         if entry.set_on > today:
@@ -1183,6 +1218,7 @@ def record_one_rep_maxes(
                 kg=entry.kg,
                 set_on=entry.set_on,
                 source=entry.source,
+                block_id=block_id,
             )
         )
     session.flush()

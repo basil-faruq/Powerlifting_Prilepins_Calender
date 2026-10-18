@@ -47,8 +47,9 @@ import sqlalchemy as sa
 from sqlmodel import Session
 from temporalio import activity
 
-from domains.strength import enums, missed_policy, models, services
+from domains.strength import enums, generator, missed_policy, models, services
 from domains.strength.agent import recorder, tools
+from domains.strength.schemas import BlockDraft, MeasuredOneRm
 from domains.strength.workflows import contracts
 from planner_core import temporal_errors, tracing
 from planner_core.db import engine, unit_of_work
@@ -145,6 +146,8 @@ class StrengthActivities:
             self.apply_edit,
             self.set_block_status,
             self.run_missed_policy,
+            self.finish_block,
+            self.create_next_block,
         ]
 
     # --- Binding ----------------------------------------------------------
@@ -362,6 +365,117 @@ class StrengthActivities:
                     failure=result.failure.reason if result.failure else None,
                 )
 
+    # --- Rolling into the next block --------------------------------------
+
+    @_activity(contracts.FINISH_BLOCK)
+    def finish_block(self, req: contracts.BlockRef) -> contracts.FinishedBlock:
+        """Close the block, and bank the maxes it produced.
+
+        `generator.next_block_one_rms` is pure and already decides what each
+        lift's max becomes; this is the half that writes. Three rules, and
+        only one of them writes anything:
+
+        * `source is None` -- unchanged. The test was missed or failed, or no
+          log beat the old max. Writing a row would invent a measurement
+          (CLAUDE.md non-negotiable #9).
+        * `source == "tested"` -- **already written.** `log_session` banked it
+          the moment the athlete logged the single, from the same predicate,
+          so writing it again here would double the row. ADR-0005's Action
+          Required says exactly this, and a test holds the two predicates
+          together.
+        * `source == "estimated"` -- written here. It is the only kind of row
+          with nowhere else to come from.
+
+        Idempotent twice over, because an activity can be retried. The block's
+        own `done` status is the run marker -- it flips in the same
+        transaction as the inserts -- and each row is additionally checked for
+        before being written, which covers a crash between attempts and an
+        athlete who recorded the same max by hand.
+
+        No unique constraint is added to `one_rep_max` to get this. Two rows
+        for one lift on one day are legitimate -- a correction -- and
+        `current_one_rms` already tie-breaks on `(set_on DESC, created_at
+        DESC)`. A schema change to paper over an activity retry would be the
+        tail wagging the dog.
+        """
+        with self._sessions() as session:
+            block = services.get_block(session, req.block_id)
+            athlete = services.get_athlete(session, block.athlete_id)
+            today = services.today_at(athlete, req.as_of)
+            state = services.load_block_state(session, req.block_id)
+            news = generator.next_block_one_rms(_draft_of(state), state.logs)
+            maxes = {lift: new.kg for lift, new in news.items()}
+
+            if block.status == "done":
+                # Already ran. Recomputed above because it is pure and the
+                # caller still needs the numbers.
+                return contracts.FinishedBlock(
+                    block_id=block.id, new_one_rms=maxes, already_done=True
+                )
+
+            fresh = [
+                MeasuredOneRm(
+                    lift_code=new.lift_code,
+                    kg=new.kg,
+                    set_on=new.set_on,
+                    source="estimated",
+                )
+                for new in news.values()
+                if new.source == "estimated"
+                and new.set_on is not None
+                and not _already_recorded(session, block.athlete_id, new)
+            ]
+            if fresh:
+                services.record_one_rep_maxes(
+                    session, block.athlete_id, fresh, block_id=block.id, today=today
+                )
+
+            block.status = "done"
+            session.add(block)
+            session.flush()
+            return contracts.FinishedBlock(
+                block_id=block.id,
+                new_one_rms=maxes,
+                written=tuple(entry.lift_code for entry in fresh),
+            )
+
+    @_activity(contracts.CREATE_NEXT_BLOCK)
+    def create_next_block(self, req: contracts.NextBlockRequest) -> contracts.NextBlockOutcome:
+        """Generate the next block from the maxes the last one produced.
+
+        The start date is derived from the plan, not from a clock: the Monday
+        after the last session, or the next Monday from today if that is
+        already past. Taking the later of the two keeps the validator's
+        `past_date` rule quiet, and deriving it from the plan at all is what
+        makes a time-skipped test produce a sensible date instead of one
+        eleven weeks behind.
+
+        The weekday map needs nothing: approving the previous block locked it
+        (`_lock_weekday_map`), and the new draft is generated against it. Same
+        lifts, same template, new numbers -- which is the whole idea of a
+        block rolling over.
+        """
+        with self._sessions() as session:
+            state = services.load_block_state(session, req.block_id)
+            athlete = services.get_athlete(session, state.athlete_id)
+            today = services.today_at(athlete, req.as_of)
+            last = max(block_session.date for block_session in state.plan)
+            start = max(_monday_after(last), _monday_on_or_after(today))
+
+            proposal = services.create_block_proposal(
+                session,
+                state.athlete_id,
+                state.template_id,
+                list(state.lifts),
+                start,
+                one_rms=req.one_rms,
+                source="workflow",
+                new_one_rms=req.one_rms,
+            )
+            return contracts.NextBlockOutcome(
+                next_block_id=proposal.block_id, proposal_id=proposal.id
+            )
+
     # --- Shared helpers ---------------------------------------------------
 
     def _lookup(self, session: Session, proposal_id: uuid.UUID) -> contracts.CommitOutcome | None:
@@ -457,6 +571,62 @@ class StrengthActivities:
         session.add(decision)
         session.flush()
         return decision
+
+
+def _draft_of(state) -> BlockDraft:
+    """A `BlockState` seen as the `BlockDraft` the generator reads.
+
+    No adapter is needed between the two: `load_block_state` already builds
+    `plan` out of `DraftSession` through `generator.draft_session_of`, and
+    `logs` out of `LoggedSession`, precisely so a block read from the database
+    is judged by the same code that judges one just generated.
+    """
+    return BlockDraft(
+        athlete_id=state.athlete_id,
+        template_id=state.template_id,
+        template_weeks=state.template_weeks,
+        start_date=state.start_date,
+        lifts=state.lifts,
+        one_rm_snapshot=state.one_rm_snapshot,
+        sessions=state.plan,
+    )
+
+
+def _already_recorded(session: Session, athlete_id: uuid.UUID, new) -> bool:
+    """Has this exact max already been written?
+
+    The second half of `finish_block`'s idempotence, for what the status
+    marker cannot cover: a crash between the insert and the status flip, or
+    an athlete who entered the same number by hand. Checked in Python rather
+    than left to the database, because an `IntegrityError` aborts the whole
+    transaction (ADR-0002 rule 1) -- the same reason `log_session` pre-checks
+    its duplicate log.
+    """
+    count = session.scalar(
+        sa.select(sa.func.count())
+        .select_from(models.OneRepMax)
+        .where(
+            models.OneRepMax.athlete_id == athlete_id,
+            models.OneRepMax.lift_code == new.lift_code,
+            models.OneRepMax.set_on == new.set_on,
+            models.OneRepMax.kg == new.kg,
+            models.OneRepMax.source == new.source,
+        )
+    )
+    return bool(count)
+
+
+def _monday_after(day: dt.date) -> dt.date:
+    """The first Monday strictly after `day`.
+
+    Blocks start on a Monday and a CHECK constraint on `block.start_date`
+    enforces it, so this is not a convenience.
+    """
+    return day + dt.timedelta(days=7 - day.weekday())
+
+
+def _monday_on_or_after(day: dt.date) -> dt.date:
+    return day if day.weekday() == 0 else _monday_after(day)
 
 
 def _dump_calls() -> list[dict[str, object]]:
