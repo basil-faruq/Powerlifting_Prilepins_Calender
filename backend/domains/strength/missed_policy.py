@@ -42,7 +42,6 @@ import logging
 import uuid
 from collections.abc import Mapping, Sequence
 from decimal import Decimal
-from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -68,7 +67,9 @@ logger = logging.getLogger(__name__)
 
 DAYS_PER_WEEK = 7
 
-Tier = Literal["in_week_move", "week_shift", "fold", "restart"]
+# Defined in `enums` so spec 15's workflow contracts can name a tier without
+# importing this module, which would drag CP-SAT into the Temporal sandbox.
+Tier = enums.MissedTier
 
 WEEKDAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 

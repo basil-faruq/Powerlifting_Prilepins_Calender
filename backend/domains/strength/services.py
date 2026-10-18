@@ -121,6 +121,21 @@ def today_for(athlete: models.Athlete) -> dt.date:
     return dt.datetime.now(ZoneInfo(athlete.timezone)).date()
 
 
+def today_at(athlete: models.Athlete, as_of: dt.datetime) -> dt.date:
+    """`today_for`, but from a clock reading taken somewhere else.
+
+    A Temporal activity may not read the clock (spec 15 §10): it can be
+    retried, and a second attempt that lands after midnight would compute a
+    different `today` and so a different plan from the same inputs. The
+    workflow reads `workflow.now()` once -- the only clock in the system that
+    replays the same -- and every activity gets that reading.
+
+    The athlete's own timezone still decides the day boundary, exactly as in
+    `today_for`. Only the source of "now" changes.
+    """
+    return as_of.astimezone(ZoneInfo(athlete.timezone)).date()
+
+
 def get_athlete(session: Session, athlete_id: uuid.UUID) -> models.Athlete:
     athlete = session.get(models.Athlete, athlete_id)
     if athlete is None:
