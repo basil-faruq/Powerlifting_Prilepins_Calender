@@ -1,5 +1,5 @@
-import { Placeholder } from "./Placeholder";
+import { SetupWizard } from "@/features/setup/SetupWizard";
 
 export function SetupPage() {
-  return <Placeholder title="Setup" spec={17} />;
+  return <SetupWizard />;
 }
