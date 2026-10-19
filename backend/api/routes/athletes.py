@@ -53,6 +53,20 @@ def create_athlete(body: AthleteCreate, session: SessionDep) -> AthleteOut:
     return AthleteOut.of(athlete)
 
 
+@router.get("", response_model=list[AthleteOut])
+def list_athletes(session: SessionDep) -> list[AthleteOut]:
+    """Every athlete, oldest first -- in practice, the one.
+
+    Ordered by `created_at` for the same reason `create_athlete` is: the first
+    element is then always the athlete the app means, which is how spec 16's
+    `AthleteProvider` reads it. An empty list is a fresh database, not an
+    error, and it is how the frontend knows to start the setup wizard.
+    Single-athlete is a recorded decision; this is not multi-user support.
+    """
+    rows = session.scalars(sa.select(models.Athlete).order_by(models.Athlete.created_at))
+    return [AthleteOut.of(athlete) for athlete in rows]
+
+
 @router.get("/{athlete_id}", response_model=AthleteDetail)
 def read_athlete(athlete_id: uuid.UUID, session: SessionDep) -> AthleteDetail:
     athlete = services.get_athlete(session, athlete_id)

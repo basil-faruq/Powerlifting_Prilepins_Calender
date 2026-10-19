@@ -8,12 +8,13 @@ import uuid
 import zipfile
 from pathlib import Path
 
+import sqlalchemy as sa
 from fastapi import APIRouter, File, Query, UploadFile, status
 from openpyxl.utils.exceptions import InvalidFileException
 
 from api.deps import SessionDep
-from api.schemas import TemplateEntryOut, TemplateImportOut, TemplateOut
-from domains.strength import services
+from api.schemas import TemplateEntryOut, TemplateImportOut, TemplateOut, TemplateSummaryOut
+from domains.strength import models, services
 from domains.strength.importer import TemplateImportError, import_template
 
 router = APIRouter(prefix="/templates", tags=["templates"])
@@ -59,6 +60,39 @@ def import_xlsx(
     session.commit()
     entries = services.template_entries(session, template_id)
     return TemplateImportOut(template_id=template_id, entries=len(entries))
+
+
+@router.get("", response_model=list[TemplateSummaryOut])
+def list_templates(session: SessionDep) -> list[TemplateSummaryOut]:
+    """Every imported template, newest first, without their rows.
+
+    Spec 17's first step has to show an existing template, and until now there
+    was no way to learn a template's id without already knowing it. The entry
+    count is a grouped `COUNT` rather than `len(template_entries(...))` so
+    listing does not load 77 rows per template just to throw them away.
+    """
+    counts = {
+        template_id: count
+        for template_id, count in session.execute(
+            sa.select(models.TemplateEntry.template_id, sa.func.count()).group_by(
+                models.TemplateEntry.template_id
+            )
+        )
+    }
+    templates = session.scalars(
+        sa.select(models.BlockTemplate).order_by(models.BlockTemplate.created_at.desc())
+    )
+    return [
+        TemplateSummaryOut(
+            id=template.id,
+            name=template.name,
+            weeks=template.weeks,
+            slots=template.slots,
+            source_file=template.source_file,
+            entries=counts.get(template.id, 0),
+        )
+        for template in templates
+    ]
 
 
 @router.get("/{template_id}", response_model=TemplateOut)

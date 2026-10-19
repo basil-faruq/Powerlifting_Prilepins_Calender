@@ -5,7 +5,7 @@
 #   ollama pull qwen2.5:14b
 #   ollama pull nomic-embed-text
 
-.PHONY: help infra infra-down infra-reset api worker migrate migrate-sql seed seed-dev-1rms demo-notes demo-data calibrate import check-llm eval-router test lint format
+.PHONY: help infra infra-down infra-reset api worker migrate migrate-sql seed seed-dev-1rms demo-notes demo-data calibrate import check-llm eval-router test lint format web gen-api test-web
 
 help:
 	@echo "make infra       Postgres (pgvector) + Temporal dev server in Docker"
@@ -26,6 +26,9 @@ help:
 	@echo "make test        pytest"
 	@echo "make lint        ruff check + ruff format --check"
 	@echo "make format      ruff format"
+	@echo "make web         Vite dev server on http://localhost:5173 (needs make api)"
+	@echo "make gen-api     Regenerate frontend/src/api/schema.d.ts from the running API"
+	@echo "make test-web    Frontend tests (vitest, run once)"
 
 infra:
 	docker compose up -d postgres temporal
@@ -133,3 +136,16 @@ lint:
 
 format:
 	cd backend && uv run ruff format .
+
+# The frontend runs on the host with hot reload, like the API (ADR-0001). Approving
+# a block needs `make worker` as well as `make api` -- approval is a Temporal update.
+web:
+	cd frontend && npm run dev
+
+# Reads the schema from the RUNNING API, so `make api` first. The generated file is
+# committed: a reader should not need the backend up to type-check the frontend.
+gen-api:
+	cd frontend && npm run gen:api
+
+test-web:
+	cd frontend && npm run test -- --run
