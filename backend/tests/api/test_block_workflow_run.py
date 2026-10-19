@@ -46,7 +46,7 @@ from domains.strength import models, services
 from domains.strength.workflows import contracts
 from domains.strength.workflows.activities import StrengthActivities
 from domains.strength.workflows.block_workflow import BlockWorkflow
-from tests.api.conftest import propose
+from tests.api.conftest import START, propose
 from tests.fakes import FakeEmbedder
 
 pytestmark = pytest.mark.asyncio
@@ -61,6 +61,18 @@ _DB_LOCK = threading.RLock()
 # against a local database, so anything near this is a hang, not slowness.
 SETTLE_TRIES = 300
 SETTLE_PAUSE = 0.05
+
+
+def _past_first_session() -> dt.timedelta:
+    """Far enough ahead to be past the first session's day and its grace period.
+
+    The block starts on `START`, the next Monday -- one day away on a Sunday and
+    seven on a Monday -- so a fixed skip is only far enough on the days it happened
+    to be written on. Counting from the start date keeps these tests true whichever
+    weekday they run.
+    """
+    days_until_start = (START - dt.date.today()).days
+    return dt.timedelta(days=days_until_start + 2, hours=contracts.GRACE_HOURS + 1)
 
 
 @pytest_asyncio.fixture(loop_scope="function")
@@ -280,7 +292,7 @@ async def test_an_unlogged_session_puts_repair_options_on_the_table(
     await _started(handle)
 
     # Past the first session's day and its grace period.
-    await env.sleep(dt.timedelta(days=2, hours=contracts.GRACE_HOURS + 1))
+    await env.sleep(_past_first_session())
     state = await _awaiting(handle, "AWAITING_RESCHEDULE_APPROVAL")
 
     assert state.pending_proposal_ids != ()
@@ -301,7 +313,7 @@ async def test_the_workflow_never_writes_a_missed_status(
     handle = await _start(worker, block_id, proposal_id)
     await _started(handle)
 
-    await env.sleep(dt.timedelta(days=2, hours=contracts.GRACE_HOURS + 1))
+    await env.sleep(_past_first_session())
     await _awaiting(handle, "AWAITING_RESCHEDULE_APPROVAL")
 
     rows = _sessions(db_session, block_id)
@@ -317,7 +329,7 @@ async def test_approving_a_repair_moves_the_dates_and_resumes(
     await _started(handle)
     before = {r.seq: r.date for r in _sessions(db_session, block_id)}
 
-    await env.sleep(dt.timedelta(days=2, hours=contracts.GRACE_HOURS + 1))
+    await env.sleep(_past_first_session())
     state = await _awaiting(handle, "AWAITING_RESCHEDULE_APPROVAL")
     chosen = state.pending_proposal_ids[0]
 
@@ -342,7 +354,7 @@ async def test_rejecting_every_repair_does_not_ask_again_immediately(
     handle = await _start(worker, block_id, proposal_id)
     await _started(handle)
 
-    await env.sleep(dt.timedelta(days=2, hours=contracts.GRACE_HOURS + 1))
+    await env.sleep(_past_first_session())
     state = await _awaiting(handle, "AWAITING_RESCHEDULE_APPROVAL")
     for pid in state.pending_proposal_ids:
         await _decide(handle, contracts.REJECT, pid, "not this week")
