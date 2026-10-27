@@ -34,8 +34,14 @@ from temporalio.contrib.pydantic import pydantic_data_converter
 from temporalio.worker import Worker
 
 from domains.strength.workflows.activities import StrengthActivities
-from domains.strength.workflows.block_workflow import BlockWorkflow
+from domains.strength.workflows.block_workflow import (
+    BlockWorkflow,
+    IndexNoteWorkflow,
+    ShapePreviewWorkflow,
+    SimulateWorkflow,
+)
 from planner_core.config import get_settings
+from planner_core.llm import get_embedder
 from planner_core.tracing import init_tracing, shutdown_tracing
 
 logger = logging.getLogger(__name__)
@@ -53,7 +59,12 @@ async def run_worker() -> None:
         namespace=settings.temporal_namespace,
         data_converter=pydantic_data_converter,
     )
-    activities = StrengthActivities()
+    # The embedder has to be handed in, or `index_note` reports "no embedder
+    # configured" and returns successfully having written nothing -- so a note
+    # logged at the gym never reaches the retrieval index and the failure looks
+    # like a completed workflow. Only the tests were passing one, which is why
+    # the suite could not see it.
+    activities = StrengthActivities(embedder_factory=get_embedder)
 
     with ThreadPoolExecutor(
         max_workers=MAX_CONCURRENT_ACTIVITIES, thread_name_prefix="activity"
@@ -61,7 +72,14 @@ async def run_worker() -> None:
         worker = Worker(
             client,
             task_queue=settings.temporal_task_queue,
-            workflows=[BlockWorkflow],
+            # Every workflow the API can start, not just the long-lived one.
+            # The three short ones were registered nowhere, so `runner.index_note`,
+            # simulate and shape-preview each started a workflow this worker then
+            # refused ("not registered on this worker") and retried for ever --
+            # and because the caller awaits a result that never comes, the request
+            # HUNG rather than failing. Found logging a session: the log committed
+            # and the response never arrived.
+            workflows=[BlockWorkflow, IndexNoteWorkflow, ShapePreviewWorkflow, SimulateWorkflow],
             activities=activities.all(),
             activity_executor=pool,
             max_concurrent_activities=MAX_CONCURRENT_ACTIVITIES,

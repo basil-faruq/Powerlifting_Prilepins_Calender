@@ -135,3 +135,48 @@ def test_the_session_list_can_be_windowed(api_client, ready, athlete, template):
 def test_an_unknown_block_is_a_404(api_client):
     assert api_client.get(f"/blocks/{uuid.uuid4()}").status_code == 404
     assert api_client.get(f"/blocks/{uuid.uuid4()}/sessions").status_code == 404
+
+
+# --- Spec 20 §6: the list the progress table reads -----------------------
+
+
+def test_the_block_list_is_empty_before_anything_is_proposed(api_client, ready, athlete):
+    assert api_client.get(f"/athletes/{athlete.id}/blocks").json() == []
+
+
+def test_an_unknown_athlete_has_no_block_list(api_client, ready):
+    assert api_client.get(f"/athletes/{uuid.uuid4()}/blocks").status_code == 404
+
+
+def test_the_block_list_carries_the_snapshot_each_block_was_planned_against(
+    api_client, ready, athlete, template
+):
+    """The progress table's whole content.
+
+    A block's `one_rm_snapshot` is what it was COMPUTED from, which is not the
+    same as the athlete's maxes today and -- after a restart -- is deliberately
+    lower than either (ADR-0010 mod 6). Reading it per block is the only way the
+    table can show what each block was actually planned against.
+    """
+    block_id, _ = propose(api_client, athlete, template)
+
+    blocks = api_client.get(f"/athletes/{athlete.id}/blocks").json()
+
+    assert [b["id"] for b in blocks] == [str(block_id)]
+    assert Decimal(blocks[0]["one_rm_snapshot"]["squat"]) == Decimal("125")
+    assert blocks[0]["number"] == 1
+    assert blocks[0]["start_date"] == START.isoformat()
+
+
+def test_the_block_list_includes_a_draft_though_the_current_block_does_not(
+    api_client, ready, athlete, template
+):
+    """`blocks/current` excludes a draft; the history does not.
+
+    They answer different questions: "what am I training now" against "what have
+    I planned". A draft abandoned without approval is still part of the second.
+    """
+    propose(api_client, athlete, template)
+
+    assert api_client.get(f"/athletes/{athlete.id}/blocks/current").status_code == 404
+    assert len(api_client.get(f"/athletes/{athlete.id}/blocks").json()) == 1

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 
@@ -63,9 +64,10 @@ async def log_session(
         session,
         session_id,
         body.performed_on,
-        # `SessionLogIn.entries` is already `list[LoggedLift]`, the domain's own
-        # shape for `session_log.entries`, so there is nothing to translate.
-        body.entries,
+        # `LoggedLiftIn` is the domain's `LoggedLift` plus the bounds the logger's
+        # form promises (spec 20 §10), so the entries are converted rather than
+        # passed through: the stored shape must stay the domain's.
+        [entry.to_domain() for entry in body.entries],
         body.note,
         # Indexing happens after the commit now, in its own activity
         # (ADR-0014's deferral). Embedding a note took several seconds on
@@ -79,6 +81,12 @@ async def log_session(
     return SessionLogOut.of(log)
 
 
+# How long the athlete may be kept waiting for something they are not waiting
+# for. An embedding takes a second or two locally; past this the note is left
+# for `reindex` rather than holding the response open.
+INDEX_NOTE_TIMEOUT_S = 10
+
+
 async def _index_the_note(runner, log_id: uuid.UUID) -> None:
     """Embed the note, if there is one. Best effort, like the signal below.
 
@@ -87,9 +95,16 @@ async def _index_the_note(runner, log_id: uuid.UUID) -> None:
     be lost to a model being down. The note stays in `session_log.note` and
     `POST /athletes/{id}/notes/reindex` catches up -- that backlog is why
     ADR-0014 chose no queue table.
+
+    The timeout is what makes "best effort" true. Indexing runs as its own
+    workflow and `execute_workflow` waits for a result, so a job no worker can
+    run does not raise -- it never returns, and the catch below never fires. A
+    log that is already committed then answers nothing at all, which is how a
+    worker missing this workflow hung every session log.
     """
     try:
-        await runner.index_note(contracts.IndexNoteRequest(log_id=log_id))
+        async with asyncio.timeout(INDEX_NOTE_TIMEOUT_S):
+            await runner.index_note(contracts.IndexNoteRequest(log_id=log_id))
     except Exception:  # noqa: BLE001 - a training record outranks its index
         logger.warning("could not index the note on log %s", log_id, exc_info=True)
 

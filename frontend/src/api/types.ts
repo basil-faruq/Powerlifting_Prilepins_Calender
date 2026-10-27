@@ -25,9 +25,13 @@ export type SessionDetail = S["SessionDetail"];
 export type SessionLogOut = S["SessionLogOut"];
 export type PlannedLiftOut = S["PlannedLiftOut"];
 export type WeekdaySlotOut = S["WeekdaySlotOut"];
-// Pydantic generates an Input and an Output shape for a model used both ways. The
-// Output one is what a log READ gives back; spec 20 writes with the Input one.
-export type LoggedLift = S["LoggedLift-Output"];
+// What a log READ gives back. Spec 20 writes with `LoggedLiftIn`, which is the same
+// shape plus the bounds the logger's form promises -- so the domain model is no
+// longer used in both directions and Pydantic stopped splitting it in two.
+export type LoggedLift = S["LoggedLift"];
+export type LoggedLiftIn = S["LoggedLiftIn"];
+export type SessionLogIn = S["SessionLogIn"];
+export type UnavailableIn = S["UnavailableIn"];
 export type ProposalOut = S["ProposalOut"];
 export type ProposalKind = ProposalOut["kind"];
 export type ProposalEdit = S["ProposalEdit"];

@@ -81,9 +81,29 @@ class TemporalRunner:
         return await self._run(ShapePreviewWorkflow.run, request, "shape")
 
     async def index_note(self, request: object) -> None:
+        """Start the indexing and do not wait for it.
+
+        Unlike its neighbours, this one has no answer anybody reads: the log is
+        already committed and the athlete is standing in a gym. Awaiting the
+        result made them wait for an embedding -- seconds on a warm model, and
+        for ever when the workflow could not be run at all -- which is the
+        opposite of the deferral ADR-0014 asked for. Starting it is durable;
+        Temporal retries it without help from this request.
+        """
+        from api import temporal_client
         from domains.strength.workflows.block_workflow import IndexNoteWorkflow
 
-        await self._run(IndexNoteWorkflow.run, request, "index-note")
+        client = await temporal_client.get_client()
+        settings = get_settings()
+        try:
+            await client.start_workflow(
+                IndexNoteWorkflow.run,
+                request,
+                id=f"index-note-{uuid.uuid4()}",
+                task_queue=settings.temporal_task_queue,
+            )
+        except Exception as exc:  # noqa: BLE001 - re-raised as itself or as 503
+            temporal_client.translate(exc)
 
     async def _run(self, method, request: object, prefix: str):
         from api import temporal_client

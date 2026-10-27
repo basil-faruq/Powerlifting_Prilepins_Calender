@@ -1109,6 +1109,23 @@ def running_block(session: Session, athlete_id: uuid.UUID) -> models.Block | Non
     )
 
 
+def athlete_blocks(session: Session, athlete_id: uuid.UUID) -> list[models.Block]:
+    """Every block this athlete has, oldest first.
+
+    Drafts included, unlike `running_block`: this answers "what have I planned"
+    rather than "what am I training now". `number` is not unique on its own --
+    a restart re-plans the same number -- so the creation time breaks the tie
+    and keeps the two in the order they happened.
+    """
+    return list(
+        session.scalars(
+            sa.select(models.Block)
+            .where(models.Block.athlete_id == athlete_id)
+            .order_by(models.Block.number, models.Block.created_at)
+        )
+    )
+
+
 def check_weekday_slots(
     session: Session,
     slots: Mapping[int, int],

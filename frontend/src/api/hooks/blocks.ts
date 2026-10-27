@@ -2,7 +2,7 @@ import { queryOptions, useMutation, useQuery, useQueryClient } from "@tanstack/r
 import { api } from "../client";
 import { ApiError } from "../errors";
 import { keys, type SessionRange } from "../keys";
-import type { BlockCreateBody } from "../types";
+import type { BlockCreateBody, UnavailableIn } from "../types";
 import { unwrap } from "../unwrap";
 
 /**
@@ -84,5 +84,51 @@ export function useCreateBlock() {
         queryClient.invalidateQueries({ queryKey: keys.blocks.all }),
         queryClient.invalidateQueries({ queryKey: keys.proposals.all }),
       ]),
+  });
+}
+
+/**
+ * Every block the athlete has planned, oldest first, each with the maxes it was
+ * computed from. The progress table's content (spec 20 §4B).
+ */
+export const athleteBlocksOptions = (athleteId: string) =>
+  queryOptions({
+    queryKey: keys.blocks.list(athleteId),
+    queryFn: () =>
+      unwrap(api.GET("/athletes/{athlete_id}/blocks", { params: { path: { athlete_id: athleteId } } })),
+  });
+
+export const useAthleteBlocks = (athleteId: string | null) =>
+  useQuery({ ...athleteBlocksOptions(athleteId ?? ""), enabled: athleteId !== null });
+
+/**
+ * Tell the block the athlete cannot train for a while.
+ *
+ * It is a signal, not a write: the route answers 202 and the repair arrives
+ * later as pending proposals in Chat. How long the gap is decides what is
+ * proposed -- a day moves a session, nine days can restart the block entirely
+ * at reduced planning maxes (ADR-0010), which is why the dialog says so before
+ * sending.
+ *
+ * `state: "unknown"` in the reply means the signal landed but no worker could
+ * be asked what came of it (ADR-0017 rule 10). That is not a failure.
+ */
+export function useMarkUnavailable() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    meta: { silent: true },
+    mutationFn: ({ blockId, body }: { blockId: string; body: UnavailableIn }) =>
+      unwrap(
+        api.POST("/blocks/{block_id}/unavailable", {
+          params: { path: { block_id: blockId } },
+          body,
+        }),
+      ),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: keys.blocks.all }),
+        queryClient.invalidateQueries({ queryKey: keys.proposals.all }),
+      ]);
+    },
   });
 }

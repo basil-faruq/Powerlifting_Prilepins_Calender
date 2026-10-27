@@ -1,3 +1,24 @@
+> **Revised 2026-10-27 (ADR-0022).** Implemented and accepted with modifications. The
+> ones that change this document most:
+>
+> - **The plate increment is a warning, not a refusal** (§10). The increment is a
+>   setting (ADR-0008) and microplates exist; the record must say what was actually
+>   lifted. The other bounds are mirrored by a new API-layer `LoggedLiftIn`.
+> - **There is no made/missed field.** A miss is logged as zero reps, which is exactly
+>   what stops the backend recording a max (ADR-0005 mod 5).
+> - **`UnavailableDialog` lives in `components/`**, not `features/log/`, because the
+>   calendar's drawer opens it too and no feature may import another.
+> - **The block table is headed "planned against", not "1RM"** — a restart plans at
+>   reduced maxes on purpose (ADR-0010 mod 6), so it will disagree with the chart.
+> - **`router.tsx` needed no change** (§7); spec 16 already registered both routes.
+>
+> Running it found three backend defects under the one action this spec exists for:
+> three workflows registered on no worker (so every log **hung**), a worker with no
+> embedder (so indexing succeeded having written nothing), and indexing awaited rather
+> than started. Saving a session went from never returning, to 10.3 s, to 0.73 s.
+>
+> Read `docs/adr/0022-session-logger-and-progress.md` before changing anything here.
+
 ## 1. Overview
 
 Two screens you use at and after the gym:

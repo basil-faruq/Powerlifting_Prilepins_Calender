@@ -143,3 +143,66 @@ def test_an_unknown_session_is_a_404(api_client):
         },
     )
     assert response.status_code == 404
+
+
+# --- Spec 20 §10: the bounds the logger's inputs promise ------------------
+#
+# The form offers sets 0-10, reps 0-20, weight up to 500 kg and RPE 6-10, and the
+# spec says the API mirrors them. It did not: the domain `LoggedLift` bounds only
+# `sets_done >= 0` and `weight_kg > 0`, so a typo in a phone number field reached
+# the database. These bound the WRITE path only -- a log already stored, and the
+# simulator reading one back, are unaffected by a limit introduced later.
+
+
+def _entry(**over) -> dict:
+    return {"lift_code": "squat", "sets_done": 1, "reps_done": 1, "weight_kg": "100", **over}
+
+
+def _post(api_client, session, entry, note=None) -> int:
+    body = {"performed_on": session["date"], "entries": [entry]}
+    if note is not None:
+        body["note"] = note
+    return api_client.post(f"/sessions/{session['id']}/log", json=body).status_code
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        pytest.param(_entry(sets_done=11), id="more sets than the form offers"),
+        pytest.param(_entry(sets_done=-1), id="negative sets"),
+        pytest.param(_entry(reps_done=21), id="more reps than the form offers"),
+        pytest.param(_entry(reps_done=-1), id="negative reps"),
+        pytest.param(_entry(reps_done=[5, 21]), id="a per-set list with one over"),
+        pytest.param(_entry(reps_done=[]), id="an empty per-set list"),
+        pytest.param(_entry(weight_kg="500.1"), id="heavier than any plate loaded here"),
+        pytest.param(_entry(weight_kg="0"), id="no weight at all"),
+        pytest.param(_entry(rpe="5.5"), id="an RPE below the scale"),
+        pytest.param(_entry(rpe="10.5"), id="an RPE above the scale"),
+    ],
+)
+def test_a_log_outside_the_form_s_own_bounds_is_refused(api_client, active, entry):
+    assert _post(api_client, active["sessions"][0], entry) == 422
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        pytest.param(_entry(sets_done=0, reps_done=0), id="attempted and not completed"),
+        pytest.param(_entry(sets_done=10, reps_done=20), id="the top of each range"),
+        pytest.param(_entry(reps_done=[5, 4, 3]), id="a per-set list"),
+        pytest.param(_entry(weight_kg="500"), id="exactly the ceiling"),
+        pytest.param(_entry(rpe="6"), id="the bottom of the RPE scale"),
+        pytest.param(_entry(rpe="10"), id="the top of the RPE scale"),
+        pytest.param(_entry(rpe="8.5"), id="a half point, which lifters do use"),
+    ],
+)
+def test_a_log_inside_them_is_accepted(api_client, active, entry):
+    assert _post(api_client, active["sessions"][0], entry) == 201
+
+
+def test_a_note_longer_than_the_form_allows_is_refused(api_client, active):
+    assert _post(api_client, active["sessions"][0], _entry(), note="x" * 2001) == 422
+
+
+def test_a_note_at_the_limit_is_kept(api_client, active):
+    assert _post(api_client, active["sessions"][0], _entry(), note="x" * 2000) == 201

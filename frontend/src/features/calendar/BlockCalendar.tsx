@@ -36,9 +36,15 @@ interface Props {
    * import each other; without one, the banner falls back to the chat route.
    */
   onOpenProposal?: (proposalId: string) => void;
+  /**
+   * Declare a day unavailable, from the drawer's "I can't make it". The dialog
+   * is shared with the logger and lives in `components/`, so the page owns it
+   * and the calendar only raises which session it was opened on.
+   */
+  onCantMakeIt?: (sessionId: string) => void;
 }
 
-export function BlockCalendar({ onOpenProposal }: Props = {}) {
+export function BlockCalendar({ onOpenProposal, onCantMakeIt }: Props = {}) {
   const { athlete, athleteId, currentBlockId } = useAthleteContext();
   const navigate = useNavigate();
 
@@ -162,7 +168,19 @@ export function BlockCalendar({ onOpenProposal }: Props = {}) {
 
       <IntensityLegend />
 
-      <SessionDrawer session={open} today={today} onClose={() => setOpen(null)} />
+      <SessionDrawer
+        session={open}
+        today={today}
+        onClose={() => setOpen(null)}
+        onCantMakeIt={
+          onCantMakeIt === undefined
+            ? undefined
+            : (sessionId) => {
+                setOpen(null);
+                onCantMakeIt(sessionId);
+              }
+        }
+      />
     </Stack>
   );
 }
