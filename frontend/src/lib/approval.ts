@@ -1,5 +1,14 @@
 import { ApiError, errorMessage, isNetworkError } from "@/api/errors";
 
+/**
+ * What an approval meant, for every screen that approves.
+ *
+ * Lifted out of the setup wizard for spec 19: the proposal cards decide the same way,
+ * and a feature importing from another feature would have been the alternative. The
+ * two callers differ in what can go wrong, not in how to read it -- a first approval
+ * STARTS a workflow and can answer 200 while still pending, while a reschedule is an
+ * update against a running one and 503s when no worker answers.
+ */
 export type ApproveOutcome =
   /** The block started, though this call did not hear it: carry on to the calendar. */
   | { kind: "started" }
@@ -19,12 +28,13 @@ export type ApproveOutcome =
   | { kind: "other"; message: string };
 
 /**
- * What an approve that failed means for the wizard (ADR-0017). Approving a first
- * block starts a Temporal workflow, so it can fail in ways the old direct commit
- * could not -- and one of those failures is not a failure at all:
+ * What an approve that failed actually means (ADR-0017). Approving goes through a
+ * Temporal workflow, so it can fail in ways a direct commit could not -- and one of
+ * those failures is not a failure at all:
  *
  * a 409 "already approved" means the FIRST attempt committed and only its answer was
- * lost. The block is running; the wizard is done and must not call that an error.
+ * lost. The decision stands, and no caller may report that as an error. Any OTHER 409
+ * is a genuine conflict: the proposal was superseded, rejected, or decided elsewhere.
  */
 export function classifyApproveError(error: unknown): ApproveOutcome {
   if (isNetworkError(error)) {

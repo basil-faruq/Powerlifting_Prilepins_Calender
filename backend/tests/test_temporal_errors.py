@@ -25,6 +25,7 @@ from planner_core.errors import (
     PlanInvalid,
     PlannerError,
     ProposalStale,
+    TemporalUnavailable,
 )
 from planner_core.proposal import ValidationResult, Violation
 
@@ -172,3 +173,34 @@ def test_a_refusal_nested_under_a_wrapper_is_still_found() -> None:
     with pytest.raises(ProposalStale) as caught:
         temporal_errors.reraise_domain(outer)
     assert caught.value.reason == "moved on"
+
+
+# --- What the client turns an outage into --------------------------------
+
+
+def test_an_update_that_nothing_applies_is_an_outage_not_a_bug() -> None:
+    """No worker on the queue must read as 503, not 500.
+
+    `WorkflowUpdateRPCTimeoutOrCancelledError` is raised when the server accepts
+    an update but nothing ever applies it, which is exactly "no worker running".
+    It is NOT a `TimeoutError`, so it used to fall through to the bug branch:
+    approving a proposal with the worker stopped answered `500 Internal Server
+    Error`, and the UI told the athlete nothing it could act on. Found by
+    stopping the worker during spec 19's live run.
+    """
+    from temporalio.client import WorkflowUpdateRPCTimeoutOrCancelledError
+
+    from api import temporal_client
+
+    with pytest.raises(TemporalUnavailable) as caught:
+        temporal_client.translate(WorkflowUpdateRPCTimeoutOrCancelledError())
+
+    # The message has to name the fix, because the athlete is the one who runs it.
+    assert "make infra" in str(caught.value)
+
+
+def test_a_bug_inside_the_client_still_looks_like_a_bug() -> None:
+    from api import temporal_client
+
+    with pytest.raises(ZeroDivisionError):
+        temporal_client.translate(ZeroDivisionError("nope"))

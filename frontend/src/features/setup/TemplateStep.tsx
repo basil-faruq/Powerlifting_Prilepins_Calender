@@ -3,7 +3,7 @@ import { useState } from "react";
 import { ApiError } from "@/api/errors";
 import { useImportTemplate } from "@/api/hooks/templates";
 import type { TemplateSummaryOut } from "@/api/types";
-import { ProblemAlert } from "./ProblemAlert";
+import { ProblemAlert } from "@/components/ProblemAlert";
 import { StepNav } from "./StepNav";
 
 interface Props {

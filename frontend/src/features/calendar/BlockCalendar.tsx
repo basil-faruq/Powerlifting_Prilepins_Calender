@@ -29,7 +29,16 @@ import { WeekList } from "./WeekList";
  * an enrichment and nothing more: it 503s whenever no Temporal worker is running, and
  * the calendar has to render in full without one (ADR-0018 mod 2).
  */
-export function BlockCalendar() {
+interface Props {
+  /**
+   * Open a pending proposal for a decision. The page supplies this, because the
+   * conversation that decides a proposal is another feature and features do not
+   * import each other; without one, the banner falls back to the chat route.
+   */
+  onOpenProposal?: (proposalId: string) => void;
+}
+
+export function BlockCalendar({ onOpenProposal }: Props = {}) {
   const { athlete, athleteId, currentBlockId } = useAthleteContext();
   const navigate = useNavigate();
 
@@ -111,7 +120,11 @@ export function BlockCalendar() {
         drawable={overlay === null ? null : { proposal: overlay.proposal, moves: overlay.plan.moves.length }}
         show={showGhosts}
         onToggle={setShowGhosts}
-        onOpenProposal={() => void navigate("/chat")}
+        onOpenProposal={(proposalId) =>
+          onOpenProposal === undefined
+            ? void navigate(`/chat?proposal=${proposalId}`)
+            : onOpenProposal(proposalId)
+        }
       />
 
       {/* Two layouts, both in the DOM, switched by CSS -- the idiom AppShell uses.

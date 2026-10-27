@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ApiError, parseProblem } from "@/api/errors";
-import { classifyApproveError } from "../approve";
+import { classifyApproveError } from "../approval";
 
 const failure = (status: number, body: unknown) => new ApiError(status, parseProblem(body, status));
 

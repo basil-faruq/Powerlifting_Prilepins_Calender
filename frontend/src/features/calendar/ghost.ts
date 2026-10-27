@@ -1,17 +1,14 @@
 import type { ProposalOut } from "@/api/types";
+import { readChanges } from "@/lib/proposalPayload";
 
 /**
- * Reading a pending proposal's moves off its payload.
+ * Turning a pending proposal's moves into something the grid can draw.
  *
- * `ProposalOut.payload` is `{ [key: string]: unknown }` in the generated schema, on
- * purpose: its shape depends on `kind`, and a union there would generate a type that
- * has to be narrowed before it can be read at all. So this is the one place in the
- * frontend that narrows an API shape by hand, and it is written to survive a payload
- * it does not recognise -- the calendar is a read-only screen and must never break on
- * one. Anything unreadable yields no moves, and the banner still appears.
+ * The narrowing itself lives in `lib/proposalPayload` -- spec 19 gave the proposal
+ * cards the same problem, and one hand-written reader is the rule (ADR-0020). What is
+ * left here is the calendar's own question: which moves land in which cell. Anything
+ * unreadable yields no moves, and the banner still appears.
  */
-
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
  * The kinds that move dates within the block on screen. A `restart` arrives as
@@ -40,32 +37,21 @@ export interface GhostPlan {
 
 export const NO_GHOSTS: GhostPlan = { moves: [], leaving: new Map(), arriving: new Map() };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isoDate(value: unknown): string | null {
-  return typeof value === "string" && ISO_DATE.test(value) ? value : null;
-}
-
 /**
- * The `action: "move"` entries of a payload's diff.
+ * The `action: "move"` entries of a payload's diff, as cells to draw.
  *
  * `calendar_solver.to_changes` emits exactly one `move` per session whose date
- * actually changed, so this is the diff rather than a comparison of two schedules.
- * The other actions are deliberately ignored here: `skip` and `fold` do not put a
- * session anywhere new, and `repeat_week` carries no dates of its own.
+ * actually changed. The other actions are deliberately ignored here: `skip` and
+ * `fold` do not put a session anywhere new, and `repeat_week` carries no dates of its
+ * own. A move that ends where it started draws nothing either.
  */
 export function readMoves(payload: unknown): GhostMove[] {
-  if (!isRecord(payload) || !Array.isArray(payload.changes)) return [];
-
   const moves: GhostMove[] = [];
-  for (const change of payload.changes) {
-    if (!isRecord(change) || change.action !== "move") continue;
-    const from = isoDate(change.from_date);
-    const to = isoDate(change.to_date);
-    if (typeof change.seq !== "number" || from === null || to === null || from === to) continue;
-    moves.push({ seq: change.seq, from, to });
+  for (const change of readChanges(payload)) {
+    if (change.action !== "move") continue;
+    const { seq, from, to } = change;
+    if (from === null || to === null || from === to) continue;
+    moves.push({ seq, from, to });
   }
   return moves;
 }

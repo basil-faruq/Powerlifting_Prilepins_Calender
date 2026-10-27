@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { waitForDecision } from "../approve";
+import { waitForDecision } from "../approval";
 
 // Tiny intervals: these are about the order of events, not about real waiting.
 const fast = { intervalMs: 1, timeoutMs: 200 };

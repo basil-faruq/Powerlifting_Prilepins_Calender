@@ -42,6 +42,12 @@ export const keys = {
     all: ["proposals"] as const,
     list: (athleteId: string, status: ProposalStatus) =>
       ["proposals", "list", athleteId, status] as const,
+    // One proposal, for a card that has to stay live while the tray around it polls.
+    detail: (proposalId: string) => ["proposals", "detail", proposalId] as const,
+  },
+  conversations: {
+    all: ["conversations"] as const,
+    messages: (conversationId: string) => ["conversations", "messages", conversationId] as const,
   },
 };
 
