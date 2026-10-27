@@ -21,6 +21,13 @@ export type BlockDraft = S["BlockDraft"];
 export type DraftSession = BlockDraft["sessions"][number];
 export type DraftLift = DraftSession["lifts"][number];
 export type SessionOut = S["SessionOut"];
+export type SessionDetail = S["SessionDetail"];
+export type SessionLogOut = S["SessionLogOut"];
+export type PlannedLiftOut = S["PlannedLiftOut"];
+export type WeekdaySlotOut = S["WeekdaySlotOut"];
+// Pydantic generates an Input and an Output shape for a model used both ways. The
+// Output one is what a log READ gives back; spec 20 writes with the Input one.
+export type LoggedLift = S["LoggedLift-Output"];
 export type ProposalOut = S["ProposalOut"];
 export type Violation = S["Violation"];
 export type LiftCode = DraftLift["lift_code"];

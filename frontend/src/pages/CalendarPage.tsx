@@ -1,5 +1,5 @@
-import { Placeholder } from "./Placeholder";
+import { BlockCalendar } from "@/features/calendar/BlockCalendar";
 
 export function CalendarPage() {
-  return <Placeholder title="Calendar" spec={18} />;
+  return <BlockCalendar />;
 }

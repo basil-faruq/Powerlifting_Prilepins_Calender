@@ -25,6 +25,12 @@ const dateTime = new Intl.DateTimeFormat(LOCALE, {
   timeZone: TIME_ZONE,
 });
 
+const dayMonth = new Intl.DateTimeFormat(LOCALE, {
+  day: "numeric",
+  month: "short",
+  timeZone: TIME_ZONE,
+});
+
 const DECIMAL = /^-?\d+(\.\d+)?$/;
 
 /**
@@ -62,6 +68,15 @@ export function formatPct(fraction: string): string {
  */
 export function formatDate(iso: string): string {
   return date.format(new Date(`${iso}T12:00:00Z`));
+}
+
+/**
+ * An ISO `YYYY-MM-DD` as just the day and month: `"2026-10-21"` → `"21 Oct"`. The
+ * calendar's columns already name the weekday and its rows the week, so a cell has
+ * room for nothing more.
+ */
+export function formatDayMonth(iso: string): string {
+  return dayMonth.format(new Date(`${iso}T12:00:00Z`));
 }
 
 /** An ISO timestamp as a date and time in Europe/Berlin. */

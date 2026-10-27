@@ -31,6 +31,13 @@ export const keys = {
     sessions: (blockId: string, range: SessionRange) =>
       ["blocks", "sessions", blockId, range.from ?? null, range.to ?? null] as const,
   },
+  // A session on its own, for the calendar's drawer. Separate from `blocks.sessions`
+  // because spec 20's log mutation has to invalidate both: the drawer's copy, and the
+  // grid's list that shows the cell as done.
+  sessions: {
+    all: ["sessions"] as const,
+    detail: (sessionId: string) => ["sessions", "detail", sessionId] as const,
+  },
   proposals: {
     all: ["proposals"] as const,
     list: (athleteId: string, status: ProposalStatus) =>

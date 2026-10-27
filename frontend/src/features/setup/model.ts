@@ -1,4 +1,5 @@
 import type { AthleteDetail, LiftCode, TemplateEntryOut } from "@/api/types";
+import { addDays, weekdayOf } from "@/lib/date";
 import { LIFTS } from "@/lib/lifts";
 
 export const STEP_TITLES = [
@@ -61,28 +62,10 @@ export function trimDecimal(text: string): string {
 }
 
 // --- dates ----------------------------------------------------------------
-// ISO strings in, ISO strings out, pinned to noon UTC so no zone can slide a date.
+// The generic three now live in `lib/date.ts`, because the block calendar needs
+// the same arithmetic. Re-exported here so every existing caller is unaffected.
 
-/** Today in `timeZone`, as `YYYY-MM-DD`. The server decides what "past" means; this only caps a picker. */
-export function todayIso(timeZone: string, now: Date = new Date()): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(now);
-}
-
-export function addDays(iso: string, days: number): string {
-  const date = new Date(`${iso}T12:00:00Z`);
-  date.setUTCDate(date.getUTCDate() + days);
-  return date.toISOString().slice(0, 10);
-}
-
-/** `0 = Monday … 6 = Sunday`, matching the backend. */
-export function weekdayOf(iso: string): number {
-  return (new Date(`${iso}T12:00:00Z`).getUTCDay() + 6) % 7;
-}
+export { addDays, todayIso, weekdayOf } from "@/lib/date";
 
 export function isMonday(iso: string): boolean {
   return weekdayOf(iso) === 0;
