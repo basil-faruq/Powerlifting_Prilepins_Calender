@@ -1,5 +1,8 @@
 import { CloseButton, Drawer, Portal } from "@chakra-ui/react";
 import { useState } from "react";
+import { useSession } from "@/api/hooks/sessions";
+import { useAthleteContext } from "@/components/AthleteProvider";
+import { UnavailableDialog } from "@/components/UnavailableDialog";
 import { ChatPanel } from "@/features/chat/ChatPanel";
 import { BlockCalendar } from "@/features/calendar/BlockCalendar";
 
@@ -11,11 +14,17 @@ import { BlockCalendar } from "@/features/calendar/BlockCalendar";
  * `features/calendar` and `features/chat` stay unaware of each other.
  */
 export function CalendarPage() {
+  const { currentBlockId } = useAthleteContext();
   const [proposalId, setProposalId] = useState<string | null>(null);
+  const [awaySessionId, setAwaySessionId] = useState<string | null>(null);
+
+  // The dialog defaults its "from" to the day the athlete pressed the button on,
+  // which is the session's date rather than today.
+  const away = useSession(awaySessionId);
 
   return (
     <>
-      <BlockCalendar onOpenProposal={setProposalId} />
+      <BlockCalendar onOpenProposal={setProposalId} onCantMakeIt={setAwaySessionId} />
 
       <Drawer.Root
         open={proposalId !== null}
@@ -39,6 +48,13 @@ export function CalendarPage() {
           </Drawer.Positioner>
         </Portal>
       </Drawer.Root>
+
+      <UnavailableDialog
+        open={awaySessionId !== null}
+        blockId={currentBlockId}
+        defaultFrom={away.data?.date}
+        onClose={() => setAwaySessionId(null)}
+      />
     </>
   );
 }

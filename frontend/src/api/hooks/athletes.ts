@@ -114,3 +114,25 @@ export function useSaveWeekdayMap() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: keys.athletes.all }),
   });
 }
+
+/**
+ * Every max ever recorded for this athlete, newest first.
+ *
+ * The chart's whole input. Rows carry `source` and `is_synthetic` separately,
+ * and the UI must filter and mark on `is_synthetic` rather than on
+ * `source === "synthetic"` -- that flag is the authoritative "is this real?"
+ * (ADR-0004 rule 4).
+ */
+export const oneRmHistoryOptions = (athleteId: string) =>
+  queryOptions({
+    queryKey: keys.athletes.oneRmHistory(athleteId),
+    queryFn: () =>
+      unwrap(
+        api.GET("/athletes/{athlete_id}/one-rep-maxes/history", {
+          params: { path: { athlete_id: athleteId } },
+        }),
+      ),
+  });
+
+export const useOneRepMaxHistory = (athleteId: string | null) =>
+  useQuery({ ...oneRmHistoryOptions(athleteId ?? ""), enabled: athleteId !== null });

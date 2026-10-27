@@ -115,6 +115,23 @@ def read_block(block_id: uuid.UUID, session: SessionDep) -> BlockOut:
     return BlockOut.of(services.get_block(session, block_id))
 
 
+@router.get("/athletes/{athlete_id}/blocks", response_model=list[BlockOut])
+def athlete_blocks(athlete_id: uuid.UUID, session: SessionDep) -> list[BlockOut]:
+    """Every block this athlete has, oldest first, each with its own snapshot.
+
+    What the progress table is made of (spec 20 §4B). It answers a different
+    question from `blocks/current` and therefore keeps drafts: "what have I
+    planned" rather than "what am I training now".
+
+    The snapshot per row matters more than it looks. It is what the block was
+    COMPUTED from, which after a restart is deliberately lower than any max the
+    athlete ever tested (ADR-0010 mod 6), so the table and the 1RM chart above
+    it will disagree -- correctly, and the UI says why.
+    """
+    services.get_athlete(session, athlete_id)
+    return [BlockOut.of(block) for block in services.athlete_blocks(session, athlete_id)]
+
+
 @router.get("/athletes/{athlete_id}/blocks/current", response_model=BlockOut)
 def current_block(athlete_id: uuid.UUID, session: SessionDep) -> BlockOut:
     """The block under way, or 404.

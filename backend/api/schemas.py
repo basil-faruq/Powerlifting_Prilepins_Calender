@@ -29,7 +29,7 @@ from collections.abc import Sequence
 from decimal import Decimal
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
 from domains.strength import enums, models, shaping_solver, simulator
 from domains.strength.agent import ChatTurn, Route
@@ -474,12 +474,56 @@ class SessionOut(BaseModel):
     lifts: list[PlannedLiftOut]
 
 
+class LoggedLiftIn(BaseModel):
+    """One lift as performed, bounded by what the logger's own form offers.
+
+    Spec 20 §10 promises the API mirrors the form's limits, and it did not: the
+    domain `LoggedLift` bounds only `sets_done >= 0` and `weight_kg > 0`, so a
+    mistyped weight reached the database unchallenged.
+
+    The bounds live HERE and not on the domain model on purpose. They describe
+    what a person can type into a phone today, not what is true of training:
+    a log written before this existed, and the simulator reading one back, must
+    not start failing validation because the form grew a ceiling.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    lift_code: enums.LiftCode
+    # Zero is meaningful: a lift attempted and not completed (a missed test single).
+    sets_done: int = Field(ge=0, le=10)
+    # One number when every set matched, a list when they differed.
+    reps_done: Annotated[int, Field(ge=0, le=20)] | list[Annotated[int, Field(ge=0, le=20)]]
+    weight_kg: Decimal = Field(gt=0, le=500)
+    # The RPE scale the form offers. Halves are real: lifters do say 8.5.
+    rpe: Decimal | None = Field(default=None, ge=6, le=10)
+
+    def to_domain(self) -> LoggedLift:
+        reps = tuple(self.reps_done) if isinstance(self.reps_done, list) else self.reps_done
+        return LoggedLift(
+            lift_code=self.lift_code,
+            sets_done=self.sets_done,
+            reps_done=reps,
+            weight_kg=self.weight_kg,
+            rpe=self.rpe,
+        )
+
+    @field_validator("reps_done")
+    @classmethod
+    def _a_per_set_list_needs_a_set_in_it(cls, value: int | list[int]) -> int | list[int]:
+        if isinstance(value, list) and not value:
+            raise ValueError("per-set reps cannot be an empty list; send a single number instead")
+        return value
+
+
 class SessionLogIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     performed_on: dt.date
-    entries: list[LoggedLift] = Field(min_length=1)
-    note: str | None = None
+    entries: list[LoggedLiftIn] = Field(min_length=1)
+    # Spec 20 §10. Pain words are NOT screened here: the backend flags them
+    # (spec 12) and the athlete is never stopped from saying something hurts.
+    note: str | None = Field(default=None, max_length=2000)
 
 
 class SessionLogOut(BaseModel):

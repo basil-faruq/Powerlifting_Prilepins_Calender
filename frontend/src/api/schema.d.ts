@@ -317,6 +317,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/athletes/{athlete_id}/blocks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Athlete Blocks
+         * @description Every block this athlete has, oldest first, each with its own snapshot.
+         *
+         *     What the progress table is made of (spec 20 §4B). It answers a different
+         *     question from `blocks/current` and therefore keeps drafts: "what have I
+         *     planned" rather than "what am I training now".
+         *
+         *     The snapshot per row matters more than it looks. It is what the block was
+         *     COMPUTED from, which after a restart is deliberately lower than any max the
+         *     athlete ever tested (ADR-0010 mod 6), so the table and the 1RM chart above
+         *     it will disagree -- correctly, and the UI says why.
+         */
+        get: operations["athlete_blocks_athletes__athlete_id__blocks_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/athletes/{athlete_id}/blocks/current": {
         parameters: {
             query?: never;
@@ -1293,26 +1322,7 @@ export interface components {
          * LoggedLift
          * @description One lift as performed, from a session log entry.
          */
-        "LoggedLift-Input": {
-            /**
-             * Lift Code
-             * @enum {string}
-             */
-            lift_code: "squat" | "bench" | "deadlift" | "press" | "row";
-            /** Sets Done */
-            sets_done: number;
-            /** Reps Done */
-            reps_done: number | number[];
-            /** Weight Kg */
-            weight_kg: number | string;
-            /** Rpe */
-            rpe?: number | string | null;
-        };
-        /**
-         * LoggedLift
-         * @description One lift as performed, from a session log entry.
-         */
-        "LoggedLift-Output": {
+        LoggedLift: {
             /**
              * Lift Code
              * @enum {string}
@@ -1326,6 +1336,34 @@ export interface components {
             weight_kg: string;
             /** Rpe */
             rpe?: string | null;
+        };
+        /**
+         * LoggedLiftIn
+         * @description One lift as performed, bounded by what the logger's own form offers.
+         *
+         *     Spec 20 §10 promises the API mirrors the form's limits, and it did not: the
+         *     domain `LoggedLift` bounds only `sets_done >= 0` and `weight_kg > 0`, so a
+         *     mistyped weight reached the database unchallenged.
+         *
+         *     The bounds live HERE and not on the domain model on purpose. They describe
+         *     what a person can type into a phone today, not what is true of training:
+         *     a log written before this existed, and the simulator reading one back, must
+         *     not start failing validation because the form grew a ceiling.
+         */
+        LoggedLiftIn: {
+            /**
+             * Lift Code
+             * @enum {string}
+             */
+            lift_code: "squat" | "bench" | "deadlift" | "press" | "row";
+            /** Sets Done */
+            sets_done: number;
+            /** Reps Done */
+            reps_done: number | number[];
+            /** Weight Kg */
+            weight_kg: number | string;
+            /** Rpe */
+            rpe?: number | string | null;
         };
         /**
          * MeasuredOneRm
@@ -1669,7 +1707,7 @@ export interface components {
              */
             performed_on: string;
             /** Entries */
-            entries: components["schemas"]["LoggedLift-Input"][];
+            entries: components["schemas"]["LoggedLiftIn"][];
             /** Note */
             note?: string | null;
         };
@@ -1691,7 +1729,7 @@ export interface components {
              */
             performed_on: string;
             /** Entries */
-            entries: components["schemas"]["LoggedLift-Output"][];
+            entries: components["schemas"]["LoggedLift"][];
             /** Note */
             note: string | null;
         };
@@ -2592,6 +2630,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BlockOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    athlete_blocks_athletes__athlete_id__blocks_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                athlete_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BlockOut"][];
                 };
             };
             /** @description Validation Error */

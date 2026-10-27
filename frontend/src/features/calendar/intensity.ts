@@ -11,11 +11,7 @@
  * (spec 18 §4B); both of those fall inside the outer steps, so nothing is clamped.
  */
 
-/** `rel_intensity` is stored at four decimal places (ADR-0005). */
-const DP = 4;
-
-/** A plain non-negative decimal. Anything else is not something to shade by. */
-const DECIMAL = /^\d+(\.\d+)?$/;
+import { scaled as scaledDecimal } from "@/lib/decimal";
 
 /** 1 is the lightest, 5 is at or over the max. */
 export type IntensityStep = 1 | 2 | 3 | 4 | 5;
@@ -35,14 +31,15 @@ export const STEP_LABEL: Record<IntensityStep, string> = {
 
 /**
  * A non-negative decimal string as an integer at four decimal places:
- * `"0.7812"` → `7812n`, `"1"` → `10000n`. Further places are truncated rather than
- * rounded, and anything that is not a plain decimal returns `null` rather than a
- * number that would be wrong.
+ * `"0.7812"` → `7812n`, `"1"` → `10000n`.
+ *
+ * The scaling itself lives in `lib/decimal` now, shared with the logger's plate
+ * check (spec 20). An intensity below zero is not something to shade by, so a
+ * signed value is refused here rather than there.
  */
 export function scaled(decimal: string): bigint | null {
-  if (!DECIMAL.test(decimal)) return null;
-  const [whole = "0", fraction = ""] = decimal.split(".");
-  return BigInt(whole + fraction.slice(0, DP).padEnd(DP, "0"));
+  const value = scaledDecimal(decimal);
+  return value === null || value < 0n ? null : value;
 }
 
 /** Which of the five steps one lift's relative intensity falls in. */

@@ -11,6 +11,10 @@ export const keys = {
       lifts: readonly string[],
       slots: Readonly<Record<string, number>>,
     ) => ["athletes", "weekday-check", athleteId, templateId, [...lifts], slots] as const,
+    // Every max ever recorded, which is what the progress chart draws. Under
+    // `athletes` so that logging a tested single invalidates it with everything
+    // else the athlete owns.
+    oneRmHistory: (athleteId: string) => ["athletes", "one-rm-history", athleteId] as const,
   },
   templates: {
     all: ["templates"] as const,
@@ -20,6 +24,9 @@ export const keys = {
   blocks: {
     all: ["blocks"] as const,
     current: (athleteId: string) => ["blocks", "current", athleteId] as const,
+    // Every block, drafts included: the progress table's "what have I planned",
+    // as against `current`'s "what am I training now".
+    list: (athleteId: string) => ["blocks", "list", athleteId] as const,
     detail: (blockId: string) => ["blocks", "detail", blockId] as const,
     state: (blockId: string) => ["blocks", "state", blockId] as const,
     preview: (body: {

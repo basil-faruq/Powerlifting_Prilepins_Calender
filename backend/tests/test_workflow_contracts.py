@@ -241,3 +241,66 @@ def _session(*, seq: int, date: dt.date, status: str) -> contracts.WorkflowSessi
         status=status,  # type: ignore[arg-type]
         deadline_utc=dt.datetime.combine(date, dt.time(12, 0), tzinfo=dt.UTC),
     )
+
+
+# --- Every workflow the API can start must be registered on the worker ----
+
+
+def test_the_worker_registers_every_workflow_the_api_can_start() -> None:
+    """A workflow nobody runs HANGS the caller; it does not fail.
+
+    `TemporalRunner` starts a workflow per job and awaits its result. A
+    workflow class the worker does not register is rejected with "not
+    registered on this worker", retried for ever, and never produces one -- so
+    the caller waits, and the route that promised to answer anyway answers
+    nothing. Logging a session did exactly that: the log committed and the
+    response never arrived, because `IndexNoteWorkflow`, `SimulateWorkflow`
+    and `ShapePreviewWorkflow` were defined and registered nowhere.
+
+    Comparing the two lists catches the next one for free.
+    """
+    from domains.strength.workflows import block_workflow, worker
+
+    defined = {
+        node.name
+        for node in ast.walk(ast.parse(Path(block_workflow.__file__).read_text(encoding="utf-8")))
+        if isinstance(node, ast.ClassDef)
+        and any(
+            isinstance(d, ast.Call) and getattr(d.func, "attr", None) == "defn"
+            for d in node.decorator_list
+        )
+    }
+    registered = {
+        name.id
+        for node in ast.walk(ast.parse(Path(worker.__file__).read_text(encoding="utf-8")))
+        if isinstance(node, ast.keyword) and node.arg == "workflows"
+        for name in ast.walk(node.value)
+        if isinstance(name, ast.Name)
+    }
+
+    assert defined, "no workflows found; this test is looking in the wrong place"
+    assert defined <= registered, (
+        f"defined but never registered on the worker: {sorted(defined - registered)}"
+    )
+
+
+def test_the_worker_gives_its_activities_an_embedder() -> None:
+    """Without one, indexing a note SUCCEEDS having done nothing.
+
+    `StrengthActivities.index_note` returns `skipped="no embedder configured"`
+    when none was passed, so the workflow completes, the route answers 201 and
+    the note never reaches the retrieval index -- a failure that looks exactly
+    like success from every side. Only the tests were passing an embedder,
+    which is precisely why the suite could not see it.
+    """
+    source = Path(worker_module().__file__).read_text(encoding="utf-8")
+    construction = next(line for line in source.splitlines() if "StrengthActivities(" in line)
+    assert "embedder_factory" in construction, (
+        f"the worker builds its activities without an embedder: {construction.strip()}"
+    )
+
+
+def worker_module():
+    from domains.strength.workflows import worker
+
+    return worker
