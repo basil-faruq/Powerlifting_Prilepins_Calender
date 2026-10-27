@@ -1,3 +1,22 @@
+> **Revised 2026-10-27 (ADR-0021).** Implemented and accepted with modifications. The
+> ones that change this document most:
+>
+> - **`route` is an object, not a string.** The badge reads `route.kind`, and `clarify`
+>   covers two unlike things — a hard filter stopped the message, or the router could
+>   not read it — so the badge says which (ADR-0015 mod 12).
+> - **Nothing is called a "missed session".** A workflow proposal is raised because a
+>   session went unlogged; `missed` is never written and means *written off* by a human
+>   (ADR-0017 rule 2).
+> - **There is no "Option 1/2/3" field.** The options for one event are the pending
+>   proposals sharing a `block_id` and a `kind`; approving one supersedes its siblings.
+> - **An invalid edit stores nothing** (ADR-0007 mod 7), so the original proposal stays
+>   approvable — §12's "Approve disabled" is honoured only until the violations are
+>   dismissed, and the card says the proposal is unchanged.
+> - **A 409 "already approved" is success on Approve** and a conflict on Reject, not the
+>   §13 "out of date" toast in both cases.
+>
+> Read `docs/adr/0021-chat-panel-and-approvals.md` before changing anything here.
+
 ## 1. Overview
 
 The **chat panel** where you talk to the agent, and the **approval cards** where proposals from chat or from the workflow wait for your decision: Approve, Reject or Edit.

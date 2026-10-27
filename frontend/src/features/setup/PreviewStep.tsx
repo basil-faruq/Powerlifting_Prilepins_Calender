@@ -10,8 +10,8 @@ import { LiftBadge } from "@/components/LiftBadge";
 import { ErrorState } from "@/components/states/ErrorState";
 import { LoadingState } from "@/components/states/LoadingState";
 import { formatDate } from "@/lib/format";
-import { classifyApproveError, waitForDecision, type ApproveOutcome } from "./approve";
-import { ProblemAlert } from "./ProblemAlert";
+import { classifyApproveError, waitForDecision, type ApproveOutcome } from "@/lib/approval";
+import { ProblemAlert } from "@/components/ProblemAlert";
 import { summarize } from "./summary";
 
 export interface CreatedBlock {

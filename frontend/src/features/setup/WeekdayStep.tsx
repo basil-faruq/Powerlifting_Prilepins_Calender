@@ -6,7 +6,7 @@ import { LiftBadge } from "@/components/LiftBadge";
 import { WEEKDAYS } from "@/lib/lifts";
 import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import { slotsNeeded } from "./model";
-import { ProblemAlert } from "./ProblemAlert";
+import { ProblemAlert } from "@/components/ProblemAlert";
 import { StepNav } from "./StepNav";
 
 /** How long to wait after the last change before asking the server (spec 17 §4). */

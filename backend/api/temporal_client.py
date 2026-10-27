@@ -40,6 +40,7 @@ from temporalio.client import (
     WorkflowFailureError,
     WorkflowHandle,
     WorkflowUpdateFailedError,
+    WorkflowUpdateRPCTimeoutOrCancelledError,
 )
 from temporalio.contrib.pydantic import pydantic_data_converter
 from temporalio.service import RPCError
@@ -249,7 +250,14 @@ def translate(exc: BaseException) -> NoReturn:
         temporal_errors.reraise_domain(exc)
     if temporal_errors.is_refusal(exc):
         raise exc
-    if isinstance(exc, RPCError | OSError | TimeoutError):
+    # `WorkflowUpdateRPCTimeoutOrCancelledError` is NOT a `TimeoutError`, so it used
+    # to fall through to the bug branch and answer 500. It is raised when an update
+    # is accepted by the server but nothing applies it, which is precisely the
+    # no-worker case the 503 exists to describe -- found approving a restart with
+    # the worker stopped, where the UI said "Internal Server Error" instead of
+    # telling the athlete to start one.
+    unreachable = (RPCError, OSError, TimeoutError, WorkflowUpdateRPCTimeoutOrCancelledError)
+    if isinstance(exc, unreachable):
         raise TemporalUnavailable(get_settings().temporal_address, str(exc)) from exc
     raise exc
 

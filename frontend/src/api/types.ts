@@ -29,5 +29,26 @@ export type WeekdaySlotOut = S["WeekdaySlotOut"];
 // Output one is what a log READ gives back; spec 20 writes with the Input one.
 export type LoggedLift = S["LoggedLift-Output"];
 export type ProposalOut = S["ProposalOut"];
+export type ProposalKind = ProposalOut["kind"];
+export type ProposalEdit = S["ProposalEdit"];
+export type ProposalReject = S["ProposalReject"];
+export type SessionChange = S["SessionChange"];
 export type Violation = S["Violation"];
 export type LiftCode = DraftLift["lift_code"];
+
+// Chat (spec 19). `route` is an OBJECT, not the bare string the spec's prose implies:
+// `clarify` covers both "the router asked a question" and "a hard filter stopped this
+// before any model saw it" (ADR-0015 mod 12), and only these fields tell them apart.
+export type ChatCreate = S["ChatCreate"];
+export type ChatResponse = S["ChatResponse"];
+export type ChatMessageOut = S["ChatMessageOut"];
+export type Route = S["Route"];
+export type RouteKind = Route["kind"];
+
+export type SimulationOut = S["SimulationOut"];
+export type LiftOutlook = S["LiftOutlook"];
+// Percentiles, never a single number (CLAUDE.md non-negotiable 8). Dates and kg come
+// over as strings; only the counts are numbers.
+export type DatePercentiles = S["DatePercentiles"];
+export type KgPercentiles = S["KgPercentiles"];
+export type CountPercentiles = S["CountPercentiles"];
