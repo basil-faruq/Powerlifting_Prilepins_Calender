@@ -210,3 +210,37 @@ def test_the_map_is_locked_while_a_block_is_running(api_client, ready, athlete, 
     )
     assert response.status_code == 409
     assert "weekday_change proposal" in response.json()["detail"]
+
+
+# --- listing --------------------------------------------------------------
+
+
+def test_listing_athletes_on_a_fresh_database_is_empty_not_an_error(api_client):
+    """How spec 16's provider learns to send the user to the setup wizard."""
+    response = api_client.get("/athletes")
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_listing_athletes_returns_the_one_that_exists(api_client):
+    created = api_client.post("/athletes", json={"name": "Basil"}).json()
+    listed = api_client.get("/athletes").json()
+    assert [row["id"] for row in listed] == [created["id"]]
+    assert listed[0]["name"] == "Basil"
+    # Money-shaped values stay strings on the wire (ADR-0007 Negative 6).
+    assert isinstance(listed[0]["plate_increment_kg"], str)
+
+
+def test_the_first_listed_athlete_is_the_oldest(api_client, db_session):
+    """`create_athlete` and the list agree on which athlete 'the' athlete is."""
+    older = models.Athlete(name="Older")
+    db_session.add(older)
+    db_session.flush()
+    newer = models.Athlete(name="Newer")
+    newer.created_at = older.created_at + dt.timedelta(seconds=1)
+    db_session.add(newer)
+    db_session.flush()
+
+    listed = api_client.get("/athletes").json()
+    assert [row["name"] for row in listed] == ["Older", "Newer"]
+    assert api_client.post("/athletes", json={"name": "Third"}).json()["id"] == listed[0]["id"]

@@ -199,6 +199,22 @@ class TemplateOut(BaseModel):
     entries: list[TemplateEntryOut]
 
 
+class TemplateSummaryOut(BaseModel):
+    """`GET /templates`: a template without its rows.
+
+    `entries` is a count, not the list. The setup wizard only needs to know a
+    template exists and what shape it has; the 77 rows come from
+    `GET /templates/{id}` when a step actually needs them (spec 17).
+    """
+
+    id: uuid.UUID
+    name: str
+    weeks: int
+    slots: int
+    source_file: str | None
+    entries: int
+
+
 class TemplateImportOut(BaseModel):
     template_id: uuid.UUID
     entries: int

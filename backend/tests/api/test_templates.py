@@ -83,3 +83,39 @@ def test_a_file_that_is_not_a_workbook_is_a_400(api_client):
 
 def test_an_unknown_template_is_a_404(api_client):
     assert api_client.get(f"/templates/{uuid.uuid4()}").status_code == 404
+
+
+# --- listing --------------------------------------------------------------
+
+
+def test_listing_templates_on_a_fresh_database_is_empty(api_client):
+    response = api_client.get("/templates")
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_a_listed_template_is_counted_but_carries_no_rows(api_client, template):
+    """The wizard needs the shape, not 77 rows it will fetch by id if it must."""
+    listed = api_client.get("/templates").json()
+    assert len(listed) == 1
+    row = listed[0]
+    assert row["id"] == str(template.id)
+    assert row["entries"] == 77
+    assert (row["weeks"], row["slots"]) == (11, 3)
+    assert "entries" in row and not isinstance(row["entries"], list)
+
+
+def test_templates_are_listed_newest_first(api_client, db_session, template):
+    import datetime as dt
+
+    from domains.strength import models
+
+    newer = models.BlockTemplate(name="B2-newer")
+    newer.created_at = template.created_at + dt.timedelta(seconds=1)
+    db_session.add(newer)
+    db_session.flush()
+
+    listed = api_client.get("/templates").json()
+    assert [row["name"] for row in listed] == ["B2-newer", template.name]
+    # A template with no rows is a zero, not a missing key.
+    assert listed[0]["entries"] == 0
