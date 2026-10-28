@@ -1,3 +1,27 @@
+> **Revised 2026-10-27 (ADR-0023).** Implemented and accepted with thirteen
+> modifications. The ones that change this document most:
+>
+> - **§3 is overridden.** `athlete_id` is **never sent**: the route joins it through
+>   `chat_message` (`role = 'user'`), so any value hides every workflow decision --
+>   which §12 requires to appear (ADR-0016). `source` is added, which §3 omits and
+>   §4A requires.
+> - **§4A** says "Missed session W3 Wed" for a workflow row. `missed` is never written
+>   and means written off by a human (ADR-0017), so the row reads "Raised
+>   automatically by the block workflow".
+> - **§4B's "Tracing disabled"** gains a second line. A null `trace_url` has three
+>   causes -- tracing off, no `LANGFUSE_PROJECT_ID`, or a row written before it was
+>   enabled -- and no field distinguishes them (ADR-0016).
+> - **§4B's "link to its card"** becomes a list of ids: the column holds only the
+>   cheapest of up to three options (ADR-0015).
+> - **§4B's validator section reads two tools.** `unsupported` is recorded on
+>   `explainer` for a plan turn and `answer_check` for an answer turn; only
+>   `plan_block` writes `validation` at all.
+> - **§7 needs no change:** spec 16 already registered the route and both nav entries.
+>   One file §7 does *not* list did change -- `api/hooks/proposals.ts`, by one line,
+>   without which §12's "approving updates the row's outcome" was false.
+>
+> Read `docs/adr/0023-decision-trace-view.md` before changing anything here.
+
 ## 1. Overview
 
 The **decision trace** screen: a timeline of every agent decision — what was asked, which route and filter fired, which tools ran with what results, what was proposed, and whether you approved it — with a link to the full Langfuse trace.

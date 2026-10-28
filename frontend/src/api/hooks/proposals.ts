@@ -90,6 +90,11 @@ export function useApproveProposal({ silent = false }: { silent?: boolean } = {}
  * Deciding one proposal supersedes its siblings, so the whole proposal list goes --
  * not just the one decided. `sessions.all` is listed separately from `blocks.all`
  * because the drawer holds a session on its own key, and a reschedule moves it.
+ *
+ * `decisions.all` is here because approving writes `decision.outcome` too, and spec
+ * 21 §12 requires the trail's row to stop saying "pending" once you have decided.
+ * Without it the trail reads stale for the whole `staleTime` and then only on a
+ * remount, since `refetchOnWindowFocus` is off globally.
  */
 function invalidateAfterDecision(queryClient: ReturnType<typeof useQueryClient>) {
   return Promise.all([
@@ -97,6 +102,7 @@ function invalidateAfterDecision(queryClient: ReturnType<typeof useQueryClient>)
     queryClient.invalidateQueries({ queryKey: keys.proposals.all }),
     queryClient.invalidateQueries({ queryKey: keys.athletes.all }),
     queryClient.invalidateQueries({ queryKey: keys.sessions.all }),
+    queryClient.invalidateQueries({ queryKey: keys.decisions.all }),
   ]);
 }
 

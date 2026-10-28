@@ -1,4 +1,5 @@
 import type { DraftSession, ProposalOut, SessionChange } from "@/api/types";
+import { finite, isRecord } from "./json";
 
 /**
  * Reading a proposal's `payload` and `cost`.
@@ -8,6 +9,10 @@ import type { DraftSession, ProposalOut, SessionChange } from "@/api/types";
  * narrowed before it can be read at all. So this is the one place in the frontend
  * that narrows an API shape by hand (ADR-0020), and every reader goes through it.
  *
+ * The guards it narrows WITH are shared (`lib/json.ts`), because a decision's
+ * `tool_calls` needs the same ones; the shapes below stay here, because only this
+ * module reads a proposal's payload.
+ *
  * It is written to survive a payload it does not recognise. A proposal whose payload
  * cannot be read still has reasons, warnings and buttons that work; only the detail
  * drawn FROM the payload goes missing. Nothing here throws, and nothing here invents
@@ -15,10 +20,6 @@ import type { DraftSession, ProposalOut, SessionChange } from "@/api/types";
  */
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 /**
  * An ISO date that is also a real day.
@@ -33,11 +34,6 @@ function isoDate(value: unknown): string | null {
   const parsed = new Date(`${value}T12:00:00Z`);
   if (Number.isNaN(parsed.getTime())) return null;
   return parsed.toISOString().startsWith(value) ? value : null;
-}
-
-/** A finite number, or null. `null` means "not stated", which is not the same as zero. */
-function finite(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 /**

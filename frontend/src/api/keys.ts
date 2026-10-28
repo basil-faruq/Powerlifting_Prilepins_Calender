@@ -1,3 +1,5 @@
+import type { DecisionOutcome, DecisionRoute, DecisionSource } from "./types";
+
 // One place for every query key, so a mutation can invalidate by prefix:
 // `keys.blocks.all` covers a block, its state, its sessions and the current block.
 export const keys = {
@@ -56,6 +58,15 @@ export const keys = {
     all: ["conversations"] as const,
     messages: (conversationId: string) => ["conversations", "messages", conversationId] as const,
   },
+  // The decision trail, and one decision for a `?id=` deep link. `list` normalises
+  // every absent filter to null so `{}` and `{ route: undefined }` are one entry
+  // rather than two copies of the same page.
+  decisions: {
+    all: ["decisions"] as const,
+    list: (filters: DecisionFilters) =>
+      ["decisions", "list", filters.route ?? null, filters.outcome ?? null, filters.source ?? null] as const,
+    detail: (decisionId: string) => ["decisions", "detail", decisionId] as const,
+  },
 };
 
 export interface SessionRange {
@@ -64,3 +75,20 @@ export interface SessionRange {
 }
 
 export type ProposalStatus = "pending" | "approved" | "rejected" | "superseded";
+
+/**
+ * The three filters spec 21 §4A offers, as the route can take them. Null means
+ * "every value", which the query string says by omitting the parameter.
+ *
+ * `athlete_id` is deliberately absent. The route joins it through `chat_message`
+ * (`role = 'user'`), so any value at all hides every workflow decision -- which §12
+ * requires to appear -- and one install has one athlete, so it buys nothing.
+ *
+ * Typed off the generated schema rather than hand-copied the way `ProposalStatus`
+ * copies its four: six route literals is where a second copy starts to drift.
+ */
+export interface DecisionFilters {
+  route?: DecisionRoute | null;
+  outcome?: DecisionOutcome | null;
+  source?: DecisionSource | null;
+}

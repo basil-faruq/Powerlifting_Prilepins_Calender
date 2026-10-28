@@ -9,6 +9,7 @@ const TIME_ZONE = "Europe/Berlin";
 const plain = new Intl.NumberFormat(LOCALE, { minimumFractionDigits: 0, maximumFractionDigits: 4 });
 const kg = new Intl.NumberFormat(LOCALE, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 const pct = new Intl.NumberFormat(LOCALE, { style: "percent", maximumFractionDigits: 1 });
+const seconds = new Intl.NumberFormat(LOCALE, { maximumFractionDigits: 2 });
 
 const date = new Intl.DateTimeFormat(LOCALE, {
   weekday: "short",
@@ -82,4 +83,25 @@ export function formatDayMonth(iso: string): string {
 /** An ISO timestamp as a date and time in Europe/Berlin. */
 export function formatDateTime(iso: string): string {
   return dateTime.format(new Date(iso));
+}
+
+/**
+ * Machine timings, which are the one family of figures in this app that really are
+ * floats: a recorded `duration_ms` int and a solver's own `wall_time_s`. The warning
+ * at the top of this file is about the decimal STRINGS a weight or an intensity
+ * arrives as, and none of them reaches these three -- so they take `number`, and need
+ * no trip through `exact`.
+ */
+export function formatDuration(ms: number): string {
+  return ms < 1000 ? `${plain.format(ms)} ms` : `${seconds.format(ms / 1000)} s`;
+}
+
+/** A solver's or the simulator's own wall time: `0.4217` -> `"0.42 s"`. */
+export function formatSeconds(value: number): string {
+  return `${seconds.format(value)} s`;
+}
+
+/** A plain count with the locale's grouping: `12480` -> `"12,480"`. */
+export function formatCount(value: number): string {
+  return plain.format(value);
 }
