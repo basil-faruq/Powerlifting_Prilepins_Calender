@@ -1,8 +1,8 @@
 import { Box, Button, HStack, Stack, Text } from "@chakra-ui/react";
 import { Link } from "react-router";
 import type { ChatResponse } from "@/api/types";
+import { RouteBadge } from "@/components/RouteBadge";
 import { LiveProposalCard } from "@/features/proposals/LiveProposalCard";
-import { RouteBadge } from "./RouteBadge";
 import { SimulationCard } from "./SimulationCard";
 
 /** A plain bubble: either side, text only. This is all history can give. */
@@ -52,7 +52,12 @@ export function AssistantTurn({ response }: { response: ChatResponse }) {
       <MessageBubble role="assistant">
         <Stack gap="2">
           <HStack gap="2" wrap="wrap">
-            <RouteBadge route={response.route} />
+            <RouteBadge
+              kind={response.route.kind}
+              filterFired={response.route.filter_fired}
+              unparseable={response.route.unparseable}
+              clarifyReason={response.route.clarify_reason}
+            />
             <Button asChild variant="plain" size="xs" h="auto" p="0">
               <Link to={`/decisions?id=${response.decision_id}`}>View trace</Link>
             </Button>

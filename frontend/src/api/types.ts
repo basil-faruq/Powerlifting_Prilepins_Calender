@@ -56,3 +56,14 @@ export type LiftOutlook = S["LiftOutlook"];
 export type DatePercentiles = S["DatePercentiles"];
 export type KgPercentiles = S["KgPercentiles"];
 export type CountPercentiles = S["CountPercentiles"];
+
+// Decision trace (spec 21). `route` here IS the bare string the chat `Route` object
+// wraps -- a decision keeps the kind in one column and `filter_fired` in another, so
+// the two never arrive as one shape. `outcome` is nullable on the wire and null means
+// PENDING (ADR-0015: no new enum value, no migration), so the filter type strips the
+// null: a query string has no way to ask for "column is null", where an omitted
+// `outcome` already means "every".
+export type DecisionOut = S["DecisionOut"];
+export type DecisionSource = DecisionOut["source"];
+export type DecisionRoute = DecisionOut["route"];
+export type DecisionOutcome = NonNullable<DecisionOut["outcome"]>;
