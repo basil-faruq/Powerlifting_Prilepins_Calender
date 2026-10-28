@@ -1,0 +1,25 @@
+# Line endings are a repository property, not a per-machine git setting.
+#
+# This repo is written on Windows and run in Linux containers. `core.autocrlf`
+# happens to be true on the author's machine, so the files are already stored
+# with LF -- but a clone on a machine without that setting would commit CRLF,
+# and GNU make before 4.3 then joins the trailing CR onto the last word of a
+# recipe. `$(XLSX)` becoming `../data/B1_Mine.xlsx\r` fails in a way nobody
+# enjoys reading.
+* text=auto
+
+# These are read by a shell, a container runtime or make, all of which are
+# entitled to object to a CR.
+Makefile text eol=lf
+*.mk text eol=lf
+*.sh text eol=lf
+Dockerfile text eol=lf
+.dockerignore text eol=lf
+Caddyfile text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Binary, so git neither diffs them nor touches their bytes.
+*.png binary
+*.gif binary
+*.xlsx binary

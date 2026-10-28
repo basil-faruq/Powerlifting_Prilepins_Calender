@@ -1,0 +1,38 @@
+# The build needs pyproject.toml, uv.lock and the source. Everything below is
+# either rebuilt in the image, irrelevant to it, or must never enter it.
+#
+# Docker matches these with filepath.Match, which does NOT recurse on its own --
+# `__pycache__/` alone would only match the one at the context root, and every
+# nested one would ship the host's bytecode. Hence `**/`.
+
+# A host virtualenv is the wrong platform's binaries; the image builds its own.
+.venv/
+**/__pycache__/
+**/*.py[cod]
+
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Tests and their fixtures are not shipped. `make test` runs on the host, and
+# the golden fixture is an oracle for development, not a runtime input. This is
+# also why `make eval-router` has no DOCKER=1 mode: its cases live here.
+tests/
+
+# Secrets never enter an image (spec 22 §11). The real .env is at the repo root,
+# above this build context, so it cannot reach the image in any case; these two
+# lines are here so that a stray copy inside backend/ would not change that.
+.env
+**/.env.*
+
+# Data belongs on a mount, not in a layer: the workbook is the athlete's own
+# and is not committed, and the OpenPowerlifting CSV is ~1 GB.
+**/*.xlsx
+**/*.csv
+
+# Local notes and editor state.
+**/*.md
+.vscode/
+.idea/

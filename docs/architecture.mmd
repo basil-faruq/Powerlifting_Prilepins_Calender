@@ -1,0 +1,36 @@
+flowchart TB
+    browser["<b>Browser</b><br/>React · TanStack Query · Chakra"]
+
+    subgraph compose["docker compose --profile full &nbsp; (make up)"]
+        direction TB
+        web["<b>web</b> · Caddy :8080<br/>static dist/ · SPA fallback · /api/* proxy"]
+
+        subgraph image["one image, two commands"]
+            direction LR
+            api["<b>api</b> · FastAPI :8000<br/>routes · hard filters · agent<br/>migrates on start"]
+            worker["<b>worker</b><br/>Block · IndexNote<br/>Simulate · ShapePreview"]
+        end
+
+        temporal["<b>temporal</b> :7233 · UI :8233<br/>SQLite on a volume"]
+        pg[("<b>postgres</b> · pgvector")]
+    end
+
+    subgraph host["your machine, outside Docker"]
+        ollama["<b>Ollama</b> :11434 — needs the GPU<br/>qwen2.5:14b · nomic-embed-text"]
+    end
+
+    langfuse["<b>Langfuse Cloud</b> — optional"]
+
+    browser -->|"one origin"| web
+    web --> api
+    api -->|"start · signal · update"| temporal
+    temporal -->|"activities:<br/>solve · validate · write"| worker
+    api --- pg
+    worker --- pg
+    api -.->|"route · explain"| ollama
+    worker -.->|"embed"| ollama
+    api -.-> langfuse
+    worker -.-> langfuse
+
+    classDef deterministic stroke-width:3px
+    class api,worker,pg deterministic

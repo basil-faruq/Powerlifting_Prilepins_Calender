@@ -1,0 +1,70 @@
+{
+	# Nothing administers this server over HTTP, and there is no hostname or
+	# certificate to manage: it serves one local origin behind `make up`.
+	admin off
+	auto_https off
+
+	log {
+		output stdout
+		format console
+	}
+}
+
+:8080 {
+	encode zstd gzip
+
+	# `handle_path` strips what it matched, so /api/health arrives at the API as
+	# /health. The API's routes are bare and the bundle is built with
+	# VITE_API_URL=/api, so the prefix exists only to separate the two on a
+	# single origin -- which is also why no CORS header is needed here, and why
+	# the API's own CORS list can stay limited to the Vite dev server.
+	#
+	# uvicorn runs with --root-path /api so that /api/docs builds its script and
+	# /api/openapi.json links with the prefix the browser actually uses.
+	handle_path /api/* {
+		reverse_proxy api:8000
+	}
+
+	# The app uses BrowserRouter, so /calendar and /decisions are client routes
+	# with no file behind them. Without the index.html fallback a reload or a
+	# pasted link 404s.
+	handle {
+		root * /srv
+
+		# Vite fingerprints everything under assets/, so those names change
+		# whenever their contents do and can be cached hard. Everything else
+		# must not be: a heuristically cached index.html would keep asking for
+		# the hashed bundle of a previous build, which a rebuild has deleted --
+		# a blank page until someone thinks to hard-reload.
+		#
+		# The matcher is inverted rather than naming index.html, because these
+		# match the request path as it arrived. Every client route -- `/`,
+		# `/calendar`, `/decisions` -- is served index.html by the try_files
+		# below, and none of them is spelled "/index.html" in the request.
+		@assets path /assets/*
+		@nocache not path /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
+		header @nocache Cache-Control "no-cache"
+
+		try_files {path} /index.html
+		file_server
+	}
+
+	# --- Before any public URL, uncomment this -------------------------------
+	#
+	# There is no login in this app and it holds one athlete's training history
+	# (spec 22 §10). A Cloudflare Tunnel or a VPS makes :8080 reachable by
+	# anyone who has the link, so put basic auth in front of it first.
+	#
+	#   docker compose run --rm --no-deps --entrypoint caddy web hash-password
+	#
+	# (--no-deps, or compose starts postgres, temporal and the api first and
+	# waits for migrations before printing a hash.)
+	#
+	# and paste the bcrypt hash below. The username is in cleartext; only the
+	# password is hashed.
+	#
+	# basic_auth {
+	# 	athlete $2a$14$replace-with-the-hash-caddy-printed
+	# }
+}
