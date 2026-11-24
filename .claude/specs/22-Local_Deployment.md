@@ -1,3 +1,31 @@
+> **Revised 2026-10-28 (ADR-0024).** Implemented and accepted with nine
+> modifications. The ones that change this document most:
+>
+> - **§12 is overridden.** `make up && make demo-data` cannot end with a block on
+>   the calendar: `demo-data` writes no 1RMs, by design (ADR-0003 #7, ADR-0004,
+>   ADR-0014 mod 10), and nothing can be planned without one. The quick start ends
+>   at the setup wizard, where the athlete enters their own maxes;
+>   `make seed-dev-1rms` is documented beside it as the labelled synthetic
+>   shortcut.
+> - **§6's `.env.example` rewrite is rejected.** Container hostnames there would
+>   break `make infra` + `make api` on the host. The three addresses that differ
+>   (`postgres`, `temporal:7233`, `host.docker.internal:11434`) are set in the
+>   compose `environment:` block, which overrides `env_file`, so one `.env`
+>   serves both modes.
+> - **§5C's "run inside the api container" becomes opt-in.** The data targets
+>   still run on the host by default, so the commands in CLAUDE.md and the older
+>   README stay true; `DOCKER=1` sends any of them into the container instead.
+> - **§3's `/api/docs` needs `--root-path /api`.** Caddy strips the prefix, so
+>   without it the docs page loads and then fails to fetch `/openapi.json`.
+> - **§4's Temporal persistence is now stated**: SQLite at
+>   `/home/temporal/temporal.db` on the `temporaldata` volume, mounted on the
+>   image's own home and not a subdirectory. This closes the question ADR-0017
+>   left to this spec.
+> - **The api's host port 8000 is deliberately not published.** Caddy is the only
+>   way in, which is also what lets `CORS_ORIGINS` be `[]` under `make up`.
+>
+> Read `docs/adr/0024-local-deployment.md` before changing anything here.
+
 ## 1. Overview
 
 Run the **whole stack on your own machine** with one command, and finish the repo for others: README, architecture diagram, factory ↔ gym mapping, demo GIF.

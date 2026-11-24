@@ -1,0 +1,13 @@
+# node_modules is the host's platform and npm ci rebuilds it in the image;
+# dist is this build's own output and a stale copy would be confusing.
+node_modules/
+dist/
+tsconfig.tsbuildinfo
+
+# Vite would inline a VITE_* value from one of these over the build ARG.
+.env
+.env.*
+
+coverage/
+.vscode/
+.idea/

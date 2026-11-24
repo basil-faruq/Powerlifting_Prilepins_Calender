@@ -1,14 +1,55 @@
-# Development infrastructure only.
+# Two ways to run this project.
 #
-# During development the backend and frontend run on the host with hot reload;
-# only these two services are containerised. The full containerised stack is
-# spec 22.
+#   make infra   postgres + temporal only. The api, worker and frontend run on
+#                the host with hot reload (ADR-0001). This is development.
+#   make up      everything, including the api, the worker and the app on
+#                http://localhost:8080 (profile `full`, spec 22). This is how
+#                the project is used and demonstrated.
+#
+# Both share the `pgdata` and `temporaldata` volumes, so they are two views of
+# one dataset and not two installations. Do not run `make worker` on the host
+# while `make up` is running: two workers polling the same task queue would
+# both pick up the same block's activities.
 #
 # Deliberately absent:
-#   - Ollama, which runs natively on the host so it can use the GPU
+#   - Ollama, which runs natively on the host so it can use the GPU. The
+#     containers reach it back across the bridge at host.docker.internal.
 #   - Langfuse, which is the Cloud free tier (spec 14)
 
 name: powerlifting-planner
+
+# Anchored once: the api and the worker are the same image with the same
+# environment, and the two drifting apart is a long debugging session.
+x-backend: &backend
+  build:
+    context: ./backend
+  image: powerlifting-planner-backend
+  # Not `required: false` for show: a clean clone has no .env, and spec 22 asks
+  # that `make up` work with only Docker, Ollama and the README steps.
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    # These four override whatever .env says, because .env holds the host-dev
+    # values -- localhost there is this container here. Everything else, the
+    # Langfuse keys and the Anthropic key included, comes from .env unset.
+    DATABASE_URL: postgresql+psycopg://planner:planner@postgres:5432/planner
+    TEMPORAL_ADDRESS: temporal:7233
+    OLLAMA_BASE_URL: http://host.docker.internal:11434
+    # Caddy puts the browser and the API on one origin, so no cross-origin
+    # request is made and this list only has to be valid JSON.
+    CORS_ORIGINS: '[]'
+  # Ollama is on the host. `host-gateway` is what makes that address resolve on
+  # Linux, and Docker Desktop accepts it as well, so it is set unconditionally
+  # rather than in a platform-specific override file.
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  depends_on:
+    postgres:
+      condition: service_healthy
+    temporal:
+      condition: service_healthy
+  restart: unless-stopped
 
 services:
   postgres:
@@ -18,7 +59,9 @@ services:
       POSTGRES_USER: planner
       POSTGRES_PASSWORD: planner
     ports:
-      - "5432:5432"
+      # Overridable so a scratch stack can run beside this one without a port
+      # fight: POSTGRES_PORT=55432 docker compose -p scratch up -d
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -54,8 +97,8 @@ services:
       - --db-filename
       - /home/temporal/temporal.db
     ports:
-      - "7233:7233" # gRPC frontend
-      - "8233:8233" # Web UI
+      - "${TEMPORAL_PORT:-7233}:7233" # gRPC frontend
+      - "${TEMPORAL_UI_PORT:-8233}:8233" # Web UI
     volumes:
       - temporaldata:/home/temporal
     healthcheck:
@@ -65,6 +108,82 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
+
+  # --- profile `full` (make up) ---------------------------------------------
+
+  api:
+    <<: *backend
+    profiles: [full]
+    # Migrations run here and nowhere else, so there is exactly one process that
+    # ever upgrades the schema, and it does so before the first request. `exec`
+    # hands PID 1 to uvicorn, so the stop signal reaches it instead of the shell.
+    #
+    # --root-path /api: Caddy strips the prefix, so the app sees bare paths but
+    # /api/docs has to link /api/openapi.json, not /openapi.json, or the docs
+    # page loads and then fails to fetch its own schema.
+    command:
+      - sh
+      - -c
+      - alembic upgrade head && exec uvicorn api.main:app --host 0.0.0.0 --port 8000
+        --root-path /api --proxy-headers --forwarded-allow-ips='*'
+    # The workbook is mounted, never copied into the image: it is the athlete's
+    # own file and is not committed. Read-only, because importing must not be
+    # able to write to it.
+    volumes:
+      - ./data:/data:ro
+    # /health always answers 200 by design -- "the API is up but Postgres is
+    # gone" is a distinguishable state, not an error -- so the status code alone
+    # says nothing. This reads the body, which is also what makes `depends_on:
+    # api: service_healthy` mean "migrations finished" for the worker.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import json,urllib.request,sys; sys.exit(0 if json.load(urllib.request.urlopen("http://127.0.0.1:8000/health",
+          timeout=5))["db"] == "ok" else 1)
+      interval: 10s
+      timeout: 10s
+      retries: 6
+      start_period: 40s
+
+  worker:
+    <<: *backend
+    profiles: [full]
+    command: ["python", "-m", "domains.strength.workflows.worker"]
+    # The other half of the app: workflows sleep on timers between sessions and
+    # nothing advances a block without this running (spec 15).
+    #
+    # SIGINT, not the default SIGTERM: worker.py flushes Langfuse spans in a
+    # `finally` that only runs if the process raises KeyboardInterrupt. SIGTERM
+    # kills it outright and the last trace is lost.
+    stop_signal: SIGINT
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+      # Waiting on the api is how the worker avoids racing the migration: it
+      # would otherwise poll a schema that is still being created.
+      api:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: /api
+    image: powerlifting-planner-web
+    profiles: [full]
+    # The only published entry point. The api's 8000 is deliberately not
+    # exposed: one origin means no CORS, and nothing can reach the API except
+    # through Caddy.
+    ports:
+      - "${WEB_PORT:-8080}:8080"
+    depends_on:
+      api:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
