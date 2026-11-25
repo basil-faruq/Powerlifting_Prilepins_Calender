@@ -7,7 +7,7 @@ import { ProblemAlert } from "@/components/ProblemAlert";
 import { StepNav } from "./StepNav";
 
 interface Props {
-  /** The newest template, if one has been imported. */
+  /** The newest template: the built-in one, or a spreadsheet imported over it. */
   template: TemplateSummaryOut | undefined;
   onNext: () => void;
 }
@@ -42,22 +42,21 @@ export function TemplateStep({ template, onNext }: Props) {
     <Stack gap="4">
       <Heading size="lg">Your template</Heading>
       <Text color="fg.muted">
-        The spreadsheet that says which lift to train, for how many sets and reps, at what intensity.
-        Only that pattern is read: never the weights it computed, and never its own example maxes.
+        The program: which lift to train, for how many sets and reps, at what share of your 1RM. Every
+        weight is computed from the maxes you enter next. To run a different program, use your own
+        spreadsheet; only its pattern is read, never the weights it computed or its example maxes.
       </Text>
 
       {template !== undefined && (
         <Box borderWidth="1px" rounded="md" p="4">
           <Text fontWeight="semibold">{template.name}</Text>
           <Text>{templateSummary(template)}</Text>
-          {template.source_file && (
-            <Text fontSize="sm" color="fg.muted">
-              from {template.source_file}
-            </Text>
-          )}
+          <Text fontSize="sm" color="fg.muted">
+            {template.source_file ? `from ${template.source_file}` : "built in"}
+          </Text>
           {!replacing && (
             <Button mt="3" size="sm" variant="outline" onClick={() => setReplacing(true)}>
-              Replace
+              Use your own spreadsheet
             </Button>
           )}
         </Box>

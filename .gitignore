@@ -3,6 +3,8 @@
 .env.local
 .claude.json
 .claude/settings.local.json
+CONTEXT.md
+CLAUDE.md
 
 # The authored template is the athlete's own data — never committed.
 # CONTEXT.md §4 documents everything the golden test needs to know about it.
@@ -17,6 +19,7 @@ openpowerlifting*.csv
 # ADR plugin tooling: installed alongside the project, not part of it. The files
 # stay on disk so the plugin keeps working; only `docs/adr/` (the ADRs it writes)
 # and `.claude/specs/` belong in version control.
+.claude/
 .claude/adr.local.md
 .claude/agents/adr-*.md
 .claude/commands/adr-*.md
