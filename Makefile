@@ -126,8 +126,12 @@ migrate-sql:
 
 # `python -m`, not `python scripts/seed_athlete.py`: the latter puts scripts/ on
 # sys.path instead of backend/, so `import planner_core` would fail.
+#
+# The athlete, then the built-in template (domains/strength/templates/b1.json).
+# Both are idempotent, and the template is skipped if one named B1 exists.
 seed:
 	$(PY) python -m scripts.seed_athlete
+	$(PY) python -m scripts.seed_template
 
 # TEST DATA. Writes 1RMs flagged `is_synthetic` with `source = 'synthetic'`, so
 # the planner has something to compute from locally. Deliberately NOT part of
@@ -152,8 +156,9 @@ demo-notes:
 # Everything a demo needs except the 1RMs, which are the athlete's to enter.
 # `seed-dev-1rms` is deliberately NOT part of this: a max is a measurement, and
 # bundling an invented one into a convenience target is how it stops being
-# obvious that it was invented (CLAUDE.md non-negotiable 9).
-demo-data: seed import demo-notes
+# obvious that it was invented (CLAUDE.md non-negotiable 9). The template comes
+# from `seed`, built in, so no workbook is needed.
+demo-data: seed demo-notes
 
 # Simulator gains (spec 10). The maxes are required arguments and are never read
 # from the database, so a synthetic-seeded one cannot calibrate against invented
@@ -180,8 +185,11 @@ check-llm:
 eval-router:
 	cd backend && uv run python -m scripts.eval_router $(ARGS)
 
-# Imports the block's pattern only -- sets, reps and intensity. Never the
-# weights Excel computed, and never its `1RM` sheet: those maxes are examples.
+# OPTIONAL: only for using your own program instead of the built-in one that
+# `make seed` loads. Imports the block's pattern only -- sets, reps and
+# intensity. Never the weights Excel computed, and never its `1RM` sheet: those
+# maxes are examples. The built-in template is also named B1, so replacing it
+# needs ARGS="--replace".
 #
 # The workbook is not committed, so it has to be yours: put it at
 # data/B1_Mine.xlsx. $(XLSX) resolves to ../data from backend/ on the host and

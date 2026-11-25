@@ -1,12 +1,13 @@
+
 # Powerlifting Block Planner
 
 An agent that plans an 11-week strength block from the athlete's current 1RMs, pins each session to fixed weekdays, reschedules around missed sessions, and rolls into the next block when a new max is tested.
 
-The spreadsheet this replaces knows "Day 1, Day 2, Day 3" — not Monday/Wednesday/Friday, not dates, and it has no answer for a missed session. The planner assigns dates, proposes repairs when a session is missed, and refuses plans that break the rules. **A solver proposes, a validator rejects, and a human approves; the LLM routes and explains but never computes a number.**
+A training program on paper says "Day 1, Day 2, Day 3" — not Monday/Wednesday/Friday, not dates, and it has no answer for a missed session. The planner assigns dates, proposes repairs when a session is missed, and refuses plans that break the rules. **A solver proposes, a validator rejects, and a human approves; the LLM routes and explains but never computes a number.**
 
 ![The block calendar](docs/screenshot.png)
 
-Solo portfolio project: one athlete, no authentication, local-first. Everything runs on your own machine — the model included — and no paid service is required to build or use it. Domain background is in [CONTEXT.md](CONTEXT.md); the implementation specs are in [.claude/specs/](.claude/specs/), built in the order given by [00-Spec_Index.md](.claude/specs/00-Spec_Index.md).
+Solo portfolio project: one athlete, no authentication, local-first. Everything runs on your own machine — the model included — and no paid service is required to build or use it. The training vocabulary, the template and the rules the planner enforces are described under [The training block](#the-training-block).
 
 ---
 
@@ -53,24 +54,6 @@ flowchart TB
 
 Also at [docs/architecture.png](docs/architecture.png); the source is [docs/architecture.mmd](docs/architecture.mmd). The thick-bordered boxes are the ones allowed to produce a number.
 
-### Factory → gym
-
-This is a production-planning agent whose domain happens to be a gym. The mapping is exact enough that the same engine runs a job-shop adapter:
-
-| Production planning | This project |
-| --- | --- |
-| Job | Planned session |
-| Operation | A lift's set block within a session |
-| Machine | Weekday slot |
-| Machine calendar | The athlete's fixed weekday map |
-| Setup / changeover time | Minimum rest gap between sessions sharing a lift |
-| Precedence constraint | Week order; a lift's test must follow its ramp |
-| Breakdown | Missed session |
-| Makespan | Block finish date |
-| Capacity | Recoverable weekly volume |
-
-That is why the engine is split in two: `planner_core/` is domain-agnostic (config, database, proposals, LLM, tracing) and `domains/strength/` is the powerlifting plug-in. `planner_core/` must not import from `domains/`, and the domains must not import each other.
-
 ---
 
 ## Quick start
@@ -101,17 +84,17 @@ make up                        # builds the images, then starts five services
 
 The first `make up` builds two images and takes a few minutes; after that it is seconds. `make logs` follows the api and worker, `make ps` shows what is running, and `make down` stops everything **without** losing data.
 
-Then put some data in it:
+**Then open the app and enter your 1RMs.** The 11-week program ships with the app and is loaded on the first start, so there is nothing to import. The wizard asks for each lift's max and the date you tested it, maps Day 1/2/3 onto real weekdays, and plans the block for you to approve. Everyone gets the same program; every weight is computed from their own maxes.
+
+That last step is not an oversight that could be automated away. **A 1RM is a measurement, and nothing in this project may invent one** — not a seed, not a migration, not a default.
+
+Optionally, give the notes search something to find:
 
 ```bash
-make demo-data DOCKER=1        # athlete + template + ~40 synthetic notes
+make demo-data DOCKER=1        # the athlete + ~40 SYNTHETIC training notes (needs Ollama)
 ```
 
-`DOCKER=1` runs the target inside the api container; without it the same target runs on the host against `localhost`. `make demo-data` needs `data/B1_Mine.xlsx` — the authored template is the athlete's own file and is not committed, so use yours. Compose mounts `./data` into the container read-only.
-
-**Then open the app and enter your 1RMs.** The wizard asks for each lift's max and the date you tested it, maps Day 1/2/3 onto real weekdays, and plans the block for you to approve.
-
-That last step is not an oversight that could be automated away. **A 1RM is a measurement, and nothing in this project may invent one** — not an importer, not a seed, not a migration. `make demo-data` deliberately stops short of it. The workbook's own `1RM` sheet is never read, because those maxes are examples.
+`DOCKER=1` runs the target inside the api container; without it the same target runs on the host against `localhost`. It creates the athlete first, which `make seed-dev-1rms` below also needs. Demo notes are flagged `is_synthetic`: search hides them unless you pass `include_synthetic=true`, and pain screening ignores them entirely, so a seeded note about a sore knee can never block a real session.
 
 If you only want to see the thing move, there is a labelled shortcut:
 
@@ -142,7 +125,72 @@ Every chat turn runs the same pipeline, and [the decisions screen](http://localh
 5. **A proposal is written, and nothing is applied until a human approves it.** `approve_proposal` is the one write path.
 6. **The explainer writes prose** and post-checks that every number in its output appears in the object it was given.
 
-The simulator answers with percentiles and an assumptions list, never a single predicted number. Where a threshold is a guess — the missed-session tiers, the Banister constants — it is labelled as a starting value in both the code and the UI rather than presented as derived.
+The simulator answers with percentiles and an assumptions list, never a single predicted number. `make calibrate` fits its progression gains from the public-domain [OpenPowerlifting](https://openpowerlifting.org/data) export (~1 GB, never committed); until that has been run it falls back to a flat 2–5% gain range and says so in its assumptions. Where a threshold is a guess — the missed-session tiers, the Banister constants — it is labelled as a starting value in both the code and the UI rather than presented as derived.
+
+---
+
+## The training block
+
+### Vocabulary
+
+- **1RM** — one-rep max, the heaviest single for a lift. Stored per athlete per block, always with the date it was tested.
+- **Block** — one 11-week cycle: 11 weeks × 3 slots = 33 sessions.
+- **Slot** — the template's Day 1 / Day 2 / Day 3, mapped once to real weekdays by the athlete and then fixed.
+- **Session** — one slot on one date, carrying one or more lifts' set blocks.
+- **Entry** — one row of the template: lift × week × slot, with sets, reps and intensity.
+- **Intensity** — a share of 1RM, stored as an exact fraction such as `70/120`.
+- **Working weight** — `1RM × intensity`, snapped to a multiple of the athlete's plate increment. A new athlete defaults to **5 kg, nearest**, because plates load in pairs and the smallest is 2.5 kg.
+- **Rep-max percentage** — the share of 1RM a trained lifter can hold for *n* reps (Brzycki-style).
+- **Relative intensity** — intensity ÷ rep-max percentage. 1.0 is at the limit for that rep count; above 1.0 is overreaching, which the template only permits from week 7.
+- **Test** — a single above 100%, which becomes the new max. One per lift, except row.
+- **Proposal** — a candidate change (new block, reschedule, weekday change) with its validation result, waiting for approval.
+- **Decision** — one chat turn's trace: which filter fired, which route was chosen, which tools ran with what inputs and outputs.
+
+### The template
+
+Intensity starts near 50% and finishes above 100%: the final single *is* the new max test. When a block ends, the tested maxes become the new 1RMs and the same template generates the next block at the new weights.
+
+| Lift | Entries | Slot(s) | Test |
+| --- | --- | --- | --- |
+| Deadlift | 11 | 2 | W11 S2, 1×1 @ 170/160 |
+| Squat | 22 | 1 and 3 | W11 S1, 1×1 @ 130/120 |
+| Bench | 22 | 1 close grip, 3 wide grip (W10 both wide) | W10 S3, 1×1 @ 112.5/105 |
+| Press | 11 | 2 | W9 S2, 1×1 @ 72.5/70 |
+| Row | 11 | 3 | none — row is never tested |
+
+**77 entries, 4 tests.** The program lives in [backend/domains/strength/templates/b1.json](backend/domains/strength/templates/b1.json) as a pattern only — lift, week, slot, sets, reps and the intensity fraction — with no weights and no maxes in it. The intensity denominator is *not* a 1RM: it is the target max the block was programmed against, an authored value in its own right. A weight is always the athlete's own 1RM × `num/den`, snapped to the increment.
+
+A golden test reproduces 77 reference weights from those fractions exactly, and another pins the shipped file to that reference entry for entry, so the program cannot drift. Prilepin's zones and the Brzycki rep-max percentages are standard published heuristics, hard-coded in the validator.
+
+### What the validator enforces
+
+Hard rules reject a plan; soft rules attach a warning and let it through. The split is calibrated so the author's own block passes with zero violations.
+
+**Hard:** a session off its home weekday without approval; two sessions on one date; dates not increasing; two sessions sharing a lift closer than the rest gap; above 100% earlier than the week before that lift's test; above 110% anywhere; relative intensity above 1.0 before week 7 or above 1.10 anywhere; a weight that is not a multiple of the plate increment; progression on a lift with a pain note in the last 7 days; a date in the past.
+
+**Soft:** Prilepin reps-per-set and total reps outside the zone; weekly volume rising while weekly top intensity also rises.
+
+
+### Missed sessions
+
+Four tiers, by how long the athlete was away. The thresholds are **starting values**, not derived ones, and the UI says so:
+
+| Tier | Gap | Response |
+| --- | --- | --- |
+| Short | ≤ 2 days | Move the session to the next free day that keeps the rest gap |
+| Week | ≤ 10 days | Repeat the week, or step back one week |
+| Illness | ≤ 21 days | Step back and re-ramp; reduce the top set |
+| Restart | longer | Restart the block, optionally re-testing first |
+
+The solver returns one to three options with their costs and the athlete picks one. A session counts as missed 12 hours after the end of its day, so a late-evening session still counts; a rejected reschedule is left alone for 24 hours so the athlete is not asked the same question in a loop. Both are starting values too.
+
+### Known limits
+
+- **Local-model tool calling is the biggest risk**, which is why `make eval-router` and `make check-llm` exist.
+- **One athlete, by design.** Multi-user would be a rewrite, not a feature.
+- **No authentication.** Fine locally; see [Putting it on the internet](#putting-it-on-the-internet) before exposing it.
+- **Chat history is truncated to the last 10 messages**, with no summarisation.
+- **Press and row have no meet data**, so the simulator borrows a scaled bench distribution and says so in its assumptions.
 
 ---
 
@@ -183,7 +231,7 @@ The containers are for running the project. For hot reload, run the infrastructu
 
 ```bash
 make infra     # postgres + temporal only
-make migrate && make seed && make import
+make migrate && make seed   # schema, then the athlete and the built-in program
 make api       # uvicorn --reload on :8000
 make worker    # the other half: nothing advances a block without it
 make web       # Vite on :5173
@@ -197,7 +245,7 @@ This needs Python 3.12 with [uv](https://docs.astral.sh/uv/) and Node ≥ 24.15 
 
 Each is a thin wrapper; the raw command is given so the Makefile is never the only way in.
 
-`DOCKER=1` runs a target inside the api container instead of on the host. It applies to `migrate`, `migrate-sql`, `seed`, `seed-dev-1rms`, `demo-notes`, `import` and `demo-data`, and to nothing else — `eval-router` reads `tests/`, which the image excludes, and `calibrate` would write its `gains.json` into a layer the next `make up` discards. It follows `COMPOSE_PROJECT_NAME`, so a second stack is addressed with `COMPOSE_PROJECT_NAME=scratch make demo-data DOCKER=1` and not with `-p`, which make never sees.
+`DOCKER=1` runs a target inside the api container instead of on the host. It applies to `migrate`, `migrate-sql`, `seed`, `seed-dev-1rms`, `demo-notes` and `demo-data`, and to nothing else — `eval-router` reads `tests/`, which the image excludes, and `calibrate` would write its `gains.json` into a layer the next `make up` discards. It follows `COMPOSE_PROJECT_NAME`, so a second stack is addressed with `COMPOSE_PROJECT_NAME=scratch make demo-data DOCKER=1` and not with `-p`, which make never sees.
 
 | Target | Runs |
 | --- | --- |
@@ -209,46 +257,18 @@ Each is a thin wrapper; the raw command is given so the Makefile is never the on
 | `make infra-reset` | `docker compose down -v` — **deletes the block and its workflows** |
 | `make api` / `make worker` / `make web` | the three host processes |
 | `make migrate` / `make migrate-sql` | `alembic upgrade head`, with or without executing |
-| `make seed` | the athlete; no 1RMs, by design |
-| `make import` | `data/B1_Mine.xlsx` → template B1, 77 entries (`ARGS=--replace`) |
+| `make seed` | the athlete and the built-in program; no 1RMs, by design |
 | `make seed-dev-1rms` | **synthetic** 1RMs (`ARGS=--clear` removes them) |
 | `make demo-notes` | **synthetic** training notes (needs Ollama) |
-| `make demo-data` | `seed` + `import` + `demo-notes` |
+| `make demo-data` | `seed` + `demo-notes` |
 | `make calibrate` | simulator gains from the OpenPowerlifting CSV |
 | `make check-llm` / `make eval-router` | measure the model before trusting it |
 | `make test` / `make lint` / `make format` | pytest; ruff check + format |
 | `make test-web` / `make gen-api` | vitest; regenerate the API types from a running API |
 
-`make migrate` and `make seed` are idempotent. `make import` refuses a name that already exists.
+`make migrate` and `make seed` are idempotent. The containerised api also loads the built-in program on every start, and never overwrites one that is already there.
 
 ---
-
-## Configuration
-
-Everything is read through `get_settings()` in [backend/planner_core/config.py](backend/planner_core/config.py); nothing else touches `os.environ`. [.env.example](.env.example) lists every variable with its default, and **no secret is ever baked into an image** — Compose passes `.env` at run time.
-
-`make up` passes this file to the containers and overrides four values, because `localhost` inside a container is the container:
-
-| Variable | Default | Container (`make up`) |
-| --- | --- | --- |
-| `DATABASE_URL` | `…@localhost:5432/planner` | `…@postgres:5432/planner` |
-| `TEMPORAL_ADDRESS` | `localhost:7233` | `temporal:7233` |
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | `http://host.docker.internal:11434` |
-| `CORS_ORIGINS` | `["http://localhost:5173"]` | `[]` — one origin, so nothing is cross-origin |
-
-> **The host targets do not read the root `.env`.** Settings load `.env` relative to the working directory and `make api` / `make worker` `cd backend` first, so they use the defaults in `config.py` unless you export a variable yourself. That is deliberate rather than tidy: it means tracing — which sends prompts and note text to Langfuse — cannot switch itself on for host development just because a key sits in a file at the repo root.
-
-Two more that cost time otherwise:
-
-- `CORS_ORIGINS` is a list, so it must be JSON: `CORS_ORIGINS=["http://localhost:5173"]`.
-- `WEB_PORT`, `POSTGRES_PORT`, `TEMPORAL_PORT` and `TEMPORAL_UI_PORT` move the published ports, for running a second stack beside the first:
-
-  ```bash
-  COMPOSE_PROJECT_NAME=scratch WEB_PORT=8081 TEMPORAL_UI_PORT=18233 make up
-  ```
-
-  Use `COMPOSE_PROJECT_NAME` rather than `-p`: it gives the second stack its own volumes *and* is the one form the Make targets inherit. The api's own 8000 is deliberately never published — Caddy is the way in.
-
 ### Tracing (optional)
 
 With `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` set, each decision is traced to [Langfuse](https://langfuse.com) Cloud's free tier and the decisions screen links to it. Add `LANGFUSE_PROJECT_ID` as well, or the link cannot be built. Leave the keys blank and the app runs identically, logging `Tracing disabled (no Langfuse keys)`.
@@ -265,23 +285,11 @@ Traces include prompts and the note text that went into them, which is the point
 
 ---
 
-## Data it keeps, and where it came from
-
-| | |
-| --- | --- |
-| `data/B1_Mine.xlsx` | The athlete's own training template. **Not committed.** Only its *pattern* is imported — which lift trains on which day of which week, for how many sets and reps, at what intensity — stored as the exact authored fraction (`70/120`), never as a computed weight. Its two known spreadsheet errors are worked around in code and documented in [CONTEXT.md](CONTEXT.md) §4. |
-| 1RMs | Yours, entered in the app with the date you tested them. The only maxes the planner computes from. |
-| Demo notes | **Synthetic**, flagged `is_synthetic`. Search hides them unless you pass `include_synthetic=true`, and pain screening ignores them entirely — a seeded note about a sore knee must never be able to block a real session. |
-| Development 1RMs | **Synthetic**, from `make seed-dev-1rms` only, and surfaced in the UI while any exist. |
-| [OpenPowerlifting](https://openpowerlifting.org/data) bulk export | Public domain. Optional, ~1 GB, never committed. `make calibrate` reduces it to a small `gains.json`; until that exists the simulator falls back to a flat 2–5% gain range and says so in its assumptions. |
-
-Prilepin's table and the Brzycki rep-max relation are standard published training heuristics. Neither is copied verbatim: the rep-max percentages are the author's own workbook column, and Prilepin's zones are hard-coded because the workbook's copy was coerced into dates by Excel and is unrecoverable.
-
-### Schema
+## Schema
 
 Fourteen tables, created only by Alembic — there is no `create_all()` anywhere in application code. `make migrate-sql` prints the DDL without touching a database if you want to read it first. Three things about it are deliberate and easy to "fix" by mistake:
 
-- **Percentages are a numerator/denominator pair of `NUMERIC(10,4)`**, not a rounded float and not integers. The authored template contains `112.5/105` and `72.5/70`, so integers cannot express it. Exactness is preserved by `Fraction(Decimal(num)) / Fraction(Decimal(den))` — note the single-argument constructor; `Fraction(Decimal, Decimal)` raises `TypeError`. A golden test reproduces all 77 weights from the spreadsheet and is not to be weakened to accommodate a refactor.
+- **Percentages are a numerator/denominator pair of `NUMERIC(10,4)`**, not a rounded float and not integers. The authored template contains `112.5/105` and `72.5/70`, so integers cannot express it. Exactness is preserved by `Fraction(Decimal(num)) / Fraction(Decimal(den))` — note the single-argument constructor; `Fraction(Decimal, Decimal)` raises `TypeError`. The 77-weight golden test is not to be weakened to accommodate a refactor.
 - **Every enum-like column has a database `CHECK`.** SQLModel `table=True` classes bypass Pydantic validation entirely, so the `CHECK` is what rejects a bad status.
 - **`weekday` is `0 = Monday`**, matching Python's `date.weekday()`. PostgreSQL's `EXTRACT(DOW)` is `0 = Sunday` and `ISODOW` is `1 = Monday`, so comparing the column against either in raw SQL without converting is off by a day.
 
@@ -305,36 +313,33 @@ Fourteen tables, created only by Alembic — there is no `create_all()` anywhere
 
 ---
 
-## Putting it on the internet
+## Next steps
 
-Local-first is the design, and a public URL is an optional extra. **There is no login in this app**, so before any public link, uncomment the `basic_auth` block in [frontend/Caddyfile](frontend/Caddyfile) and paste in a hash:
+Where the project goes from here. None of this exists yet.
 
-```bash
-docker compose run --rm --entrypoint caddy web hash-password
-```
+**Accounts and access**
+- **Login.** Real authentication (email and password or OAuth) instead of the Caddy basic-auth stopgap, so a public link is safe without a shared password.
+- **More than one athlete.** Per-user data, so several lifters, or a coach and their athletes, can share one deployment. Single-athlete is baked into the API and UI today, so this is a rework rather than a toggle.
+- **Roles.** A coach who proposes and an athlete who approves, using the existing proposal and approval flow.
 
-| Option | Cost | When |
-| --- | --- | --- |
-| **Cloudflare Tunnel** — `cloudflared tunnel --url http://localhost:8080` | free | A live walkthrough. Reachable only while your machine and the tunnel are running |
-| **Small VPS** | ~€5/month, or free on Oracle's ARM tier | An always-on link. Check the GitHub Student Developer Pack for hosting credits first |
+**Programs**
+- **An in-app program editor**, so anyone can build or tweak their own block in the browser instead of starting from the built-in one.
+- **A library of programs**: different lengths, frequencies and lift selections, chosen in the setup wizard.
+- **Shortened blocks** after a long break, instead of always restarting all 11 weeks.
 
-A VPS has no GPU, so run it with `LLM_PROVIDER=anthropic` and a spending cap, or a small CPU model. Embeddings still need Ollama, but `nomic-embed-text` runs fine on CPU.
+**UI**
+- **Mobile-first session logging**: larger tap targets, a rest timer and offline entry that syncs later.
+- **Progress views**: estimated 1RM over time, weekly volume and intensity, and block-to-block comparison.
+- **Calendar export** (iCal), so sessions appear in the athlete's own calendar.
+- **Smoother onboarding**: inline explanations of 1RM, relative intensity and the missed-session tiers.
+- **An accessibility pass** across the calendar, the chat panel and the decision trace.
 
----
+**Agent and planning**
+- **Chat memory** that summarises older messages instead of dropping everything past the last 10.
+- **A Claude comparison** in the router evaluation, and the parameter-extraction accuracy measured alongside the route accuracy.
+- **Better simulator calibration**, particularly for press and row, which have no meet data of their own.
+- **Reminders** before a session and a prompt to log it afterwards.
 
-## Layout
-
-```
-backend/
-  planner_core/      domain-agnostic engine — config, db, proposal, llm, tracing
-  domains/strength/  powerlifting plug-in — importer, generator, validator,
-                     solvers, simulator, notes, agent/, workflows/
-  migrations/        Alembic; the only way the schema ever changes
-  api/               FastAPI app, routes/, deps
-  scripts/           import, golden fixture, seeds, router eval
-  tests/
-frontend/            React + TS + Vite + TanStack Query + Chakra
-data/B1_Mine.xlsx    the authored template everything derives from — not committed
-.claude/specs/       numbered implementation specs, in build order
-docs/adr/            architecture decision records
-```
+**Running it**
+- **One-click hosting**: a documented deployment with authentication on and the model behind a spending cap.
+- **Backups** of the database and workflow history.

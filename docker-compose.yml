@@ -119,17 +119,20 @@ services:
     # ever upgrades the schema, and it does so before the first request. `exec`
     # hands PID 1 to uvicorn, so the stop signal reaches it instead of the shell.
     #
+    # seed_template loads the built-in block template if none named B1 exists,
+    # so a fresh stack needs no spreadsheet. It never touches an existing one.
+    #
     # --root-path /api: Caddy strips the prefix, so the app sees bare paths but
     # /api/docs has to link /api/openapi.json, not /openapi.json, or the docs
     # page loads and then fails to fetch its own schema.
     command:
       - sh
       - -c
-      - alembic upgrade head && exec uvicorn api.main:app --host 0.0.0.0 --port 8000
+      - alembic upgrade head && python -m scripts.seed_template && exec uvicorn api.main:app --host 0.0.0.0 --port 8000
         --root-path /api --proxy-headers --forwarded-allow-ips='*'
-    # The workbook is mounted, never copied into the image: it is the athlete's
-    # own file and is not committed. Read-only, because importing must not be
-    # able to write to it.
+    # Optional: a workbook for `make import DOCKER=1`, for anyone replacing the
+    # built-in template with their own. Mounted, never copied into the image,
+    # and read-only, because importing must not be able to write to it.
     volumes:
       - ./data:/data:ro
     # /health always answers 200 by design -- "the API is up but Postgres is
