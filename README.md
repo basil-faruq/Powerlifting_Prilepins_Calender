@@ -3,7 +3,7 @@
 
 An agent that plans an 11-week strength block from the athlete's current 1RMs, pins each session to fixed weekdays, reschedules around missed sessions, and rolls into the next block when a new max is tested.
 
-A training program on paper says "Day 1, Day 2, Day 3" — not Monday/Wednesday/Friday, not dates, and it has no answer for a missed session. The planner assigns dates, proposes repairs when a session is missed, and refuses plans that break the rules. **A solver proposes, a validator rejects, and a human approves; the LLM routes and explains but never computes a number.**
+A training program on paper says "Day 1, Day 2, Day 3" — not Monday/Wednesday/Friday, not dates, and it has no answer for a missed session. The planner assigns dates, proposes repairs when a session is missed, and refuses plans that break the rules. 
 
 ![The block calendar](docs/screenshot.png)
 
@@ -73,8 +73,6 @@ ollama pull nomic-embed-text   # embeddings, 768 dimensions
 cp .env.example .env           # every default is already local-safe
 make up                        # builds the images, then starts five services
 ```
-
-> **On a 16 GB machine, use `qwen2.5:7b` instead.** `make up` plus a 9 GB model does not fit: measured on a 16 GB box with a 6 GB GPU, the stack left 1.6 GB of RAM free and a single generation did not return in ten minutes. `qwen2.5:7b` (4.7 GB) loads in ~100 s at 84% GPU and answers a reschedule turn in about three minutes. Set `OLLAMA_CHAT_MODEL` and `OLLAMA_ROUTER_MODEL` to it in `.env`. The router accuracy below was measured on the 14b, so a smaller model is a trade, not a free win.
 
 | | |
 | --- | --- |
